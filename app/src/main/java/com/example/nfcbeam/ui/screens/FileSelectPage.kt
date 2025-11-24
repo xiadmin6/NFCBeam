@@ -15,15 +15,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -80,17 +78,19 @@ fun FileSelectPage(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
+        val barTotalHeight = 96.dp
+        val downOffset = barTotalHeight / 3
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(16.dp)
+                .offset(y = downOffset)          // ← 整体正偏移
         ) {
-
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
             colors = CardDefaults.cardColors(
                 containerColor = Color.Transparent
             ),
@@ -165,8 +165,8 @@ fun FileSelectPage(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(horizontal = 13.dp),
+            horizontalArrangement = Arrangement.spacedBy(15.dp)
         ) {
             FileTypeOption(
                 title = "照片",
@@ -214,34 +214,54 @@ fun FileSelectPage(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(16.dp)
         ) {
-            Column {
-                /* 已选文件显示 */
-                if (selectedFiles.isNotEmpty()) {
-                    Text(
-                        "已选文件 (${selectedFiles.size})", 
-                        fontWeight = FontWeight.Bold, 
-                        fontSize = 16.sp,
-                        modifier = Modifier.padding(bottom = 8.dp)
+            val density = LocalDensity.current
+            val maskHeight = 320.dp
+            val maskHeightPx = with(density) { maskHeight.toPx() }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(maskHeight)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                MaterialTheme.colorScheme.background.copy(alpha = 0.25f),
+                                MaterialTheme.colorScheme.background.copy(alpha = 0.95f)
+                            ),
+                            startY = 0f,
+                            endY = maskHeightPx
+                        )
                     )
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.padding(bottom = 12.dp)
-                    ) {
-                        items(selectedFiles) { uri -> SelectedFileChip(uri) }
-                    }
-                }
-                
-                Button(
-                    onClick = { onSend(selectedFiles) },
-                    enabled = selectedFiles.isNotEmpty(),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("发送", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            )
+
+            // 2. 发送按钮（悬浮）
+            val buttonHeight = 56.dp * 4 / 3          // 当前按钮高
+            val downOffset = buttonHeight / 4         // ↓ 下移 1/4
+
+            Card(
+                onClick = { if (selectedFiles.isNotEmpty()) onSend(selectedFiles) },
+                enabled = selectedFiles.isNotEmpty(),
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (selectedFiles.isNotEmpty())
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                ),
+                elevation = CardDefaults.cardElevation(
+                    defaultElevation = if (selectedFiles.isNotEmpty()) 16.dp else 0.dp
+                ),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 24.dp + downOffset)   // ← 这里实现下移
+                    .fillMaxWidth(0.9f)
+                    .height(buttonHeight)
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                    Text("发送", style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }

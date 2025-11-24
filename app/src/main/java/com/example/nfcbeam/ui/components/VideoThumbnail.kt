@@ -103,7 +103,7 @@ fun VideoThumbnail(
                     Icon(
                         Icons.Default.PlayCircle,
                         contentDescription = "播放视频",
-                        modifier = Modifier.size(48.dp),
+                        modifier = Modifier.size(30.dp),
                         tint = Color.White.copy(alpha = 0.9f)
                     )
                 }
