@@ -33,6 +33,8 @@ import com.example.nfcbeam.ui.screens.FileSelectPage
 import com.example.nfcbeam.ui.screens.TransferInProgressScreen
 import com.example.nfcbeam.ui.screens.TransferCompleteScreen
 import com.example.nfcbeam.ui.theme.NFCBeamTheme
+import androidx.activity.OnBackPressedCallback
+import androidx.compose.ui.platform.LocalContext
 
 class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     
@@ -119,14 +121,16 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     private var isTransferSuccess by mutableStateOf(true)
     private var isNfcConnected by mutableStateOf(false)
     private var bluetoothDeviceName by mutableStateOf("")
-    
+    private var isSenderMode by mutableStateOf(true)
+    private var hceService: HceCardService? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         // 初始化管理器
         bluetoothManager = BluetoothManager(this)
         fileTransferManager = FileTransferManager(this, bluetoothManager)
-        
+
         setContent {
             NFCBeamTheme {
                 Surface(
@@ -138,47 +142,57 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
                         transferProgress = transferProgress,
                         transferStatus = transferStatus,
                         transferredFiles = transferredFiles,
+                        isSenderMode = isSenderMode,
                         isTransferSuccess = isTransferSuccess,
                         bluetoothDeviceName = bluetoothDeviceName,
                         isNfcConnected = isNfcConnected,
                         onScreenChange = { screen -> currentScreen = screen },
-                        onFilesSelected = { files -> 
+                        onFilesSelected = { files ->
                             selectedFiles = files
                             currentScreen = Screen.TRANSFER_IN_PROGRESS
                         },
                         onTransferStart = { startTransfer() },
-                        onBackToHome = { 
+                        onBackToHome = {
                             resetTransferState()
-                            currentScreen = Screen.HOME 
+                            currentScreen = Screen.HOME
                         },
                         onRetryTransfer = { startTransfer() },
                         onRequestPermissions = { requestPermissions() },
-                        onPhotoPicker = { 
-                            // 打开图片选择器，设置图片MIME类型
+                        onPhotoPicker = {
                             imagePickerLauncher.launch(arrayOf("image/*"))
                         },
-                        onVideoPicker = { 
-                            // 打开视频选择器，设置视频MIME类型
+                        onVideoPicker = {
                             videoPickerLauncher.launch(arrayOf("video/*"))
                         },
-                        onFilePicker = { mime -> 
-                            // 打开文件选择器，使用传入的MIME类型
+                        onFilePicker = { mime ->
                             filePickerLauncher.launch(arrayOf(mime))
                         },
-                        onFolderPicker = { 
-                            // 打开文件夹选择器
+                        onFolderPicker = {
                             folderPickerLauncher.launch(null)
                         }
                     )
                 }
             }
         }
-        
+
         // 请求权限
         requestPermissions()
-        
+
         // 处理NFC Intent
         handleNfcIntent(intent)
+
+        val callback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                when (currentScreen) {
+                    Screen.HOME -> finish()                 // 退出 App
+                    else        -> {
+                        resetTransferState()
+                        currentScreen = Screen.HOME        // 回首页
+                    }
+                }
+            }
+        }
+        onBackPressedDispatcher.addCallback(this, callback)
     }
     
     private fun requestPermissions() {
@@ -254,6 +268,58 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
             enableBluetoothLauncher.launch(enableBtIntent)
         } else {
             bluetoothManager.initialize()
+            // 根据当前模式初始化蓝牙服务
+            updateModeConfiguration()
+        }
+    }
+    
+    // 切换发送/接收模式
+    fun toggleMode() {
+        isSenderMode = !isSenderMode
+        updateModeConfiguration()
+        Log.d("Mode", "模式切换为: ${if (isSenderMode) "发送端" else "接收端"}")
+    }
+    
+    // 更新模式配置
+    private fun updateModeConfiguration() {
+        if (isSenderMode) {
+            // 发送端模式：停止蓝牙服务器，准备通过NFC发送蓝牙信息
+            bluetoothManager.stopBluetoothServer()
+            // 准备蓝牙信息用于NFC传输
+            val btInfo = bluetoothManager.getBluetoothInfoForNFC()
+            Log.d("Mode", "发送端模式，蓝牙信息: $btInfo")
+        } else {
+            // 接收端模式：启动蓝牙服务器等待连接，激活HCE服务
+            bluetoothManager.startBluetoothServer()
+            // 激活HCE服务
+            activateHceService()
+            Log.d("Mode", "接收端模式，启动蓝牙服务器和HCE服务")
+        }
+    }
+    
+    // 激活HCE服务
+    private fun activateHceService() {
+        try {
+            // 设置HCE服务中的蓝牙信息
+            val btInfo = bluetoothManager.getBluetoothInfoForNFC()
+            // 这里应该通过某种方式将蓝牙信息传递给HCE服务
+            // 在实际实现中，可能需要使用广播或共享首选项
+            Log.d("HCE", "HCE服务激活，蓝牙信息: $btInfo")
+        } catch (e: Exception) {
+            Log.e("HCE", "激活HCE服务失败", e)
+        }
+    }
+    
+    // 处理NFC触碰事件
+    fun handleNfcTouch() {
+        if (isSenderMode) {
+            // 发送端：通过NFC发送蓝牙信息
+            val btInfo = bluetoothManager.getBluetoothInfoForNFC()
+            sendNfcData("BT:$btInfo")
+            Log.d("NFC", "发送端发送蓝牙信息: $btInfo")
+        } else {
+            // 接收端：HCE服务已激活，等待NFC读取
+            Log.d("NFC", "接收端等待NFC读取")
         }
     }
     
@@ -459,6 +525,7 @@ fun NFCBeamApp(
     transferredFiles: List<String>,
     isTransferSuccess: Boolean,
     isNfcConnected: Boolean,
+    isSenderMode: Boolean,
     bluetoothDeviceName: String,
     onScreenChange: (Screen) -> Unit,
     onFilesSelected: (List<Uri>) -> Unit,
@@ -473,11 +540,13 @@ fun NFCBeamApp(
     onTransferStart: () -> Unit
 ) {
     var selectedFiles by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    val context = LocalContext.current
 
     when (currentScreen) {
         Screen.HOME -> {
             HomeScreen(
                 isNfcConnected = isNfcConnected,
+                isSenderMode = isSenderMode,
                 onSendFiles = {
                     // NFC连接建立后自动跳转到文件选择页面
                     onScreenChange(Screen.FILE_SELECT)
@@ -485,6 +554,9 @@ fun NFCBeamApp(
                 onReceiveFiles = {
                     // 进入接收模式
                     onScreenChange(Screen.TRANSFER_IN_PROGRESS)
+                },
+                onToggleMode = {
+                    (context as? MainActivity)?.toggleMode()
                 }
             )
         }

@@ -453,38 +453,6 @@ private fun getFileNameFromUri(uri: Uri): String {
 }
 
 @Composable
-fun FileSelectPagePreview() {
-    MaterialTheme {
-        FileSelectPage(
-            bluetoothDeviceName = "iPhone 14 Pro",
-            selectedFiles = emptyList(),
-            onPhotoPicker = {},
-            onVideoPicker = {},
-            onFilePicker = {},
-            onFolderPicker = {},
-            onSend = {},
-            onFileSelectionChange = {}
-        )
-    }
-}
-
-@Composable
-fun FileSelectPageWithFilesPreview() {
-    MaterialTheme {
-        FileSelectPage(
-            bluetoothDeviceName = "Samsung Galaxy S23",
-            selectedFiles = listOf(Uri.parse("file://test.jpg")),
-            onPhotoPicker = {},
-            onVideoPicker = {},
-            onFilePicker = {},
-            onFolderPicker = {},
-            onSend = {},
-            onFileSelectionChange = {}
-        )
-    }
-}
-
-@Composable
 private fun MediaGrid(
     items: List<MediaItem>,
     selectedFiles: List<Uri>,

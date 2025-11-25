@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">NFCBeam</string>
+    <string name="hce_service_description">NFC Beam HCE Service</string>
+    <string name="aid_group_description">NFC Beam AID Group</string>
 </resources>

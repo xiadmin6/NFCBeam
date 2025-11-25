@@ -39,7 +39,9 @@ class BluetoothManager(private val context: Context) {
         fun onDeviceDisconnected()
         fun onConnectionFailed(error: String)
     }
-    
+
+    fun startBluetoothServer() = startServer()
+    fun stopBluetoothServer() = stopServer()
     private var stateListener: BluetoothStateListener? = null
     
     // 蓝牙广播接收器
@@ -155,13 +157,77 @@ class BluetoothManager(private val context: Context) {
                 Log.d(TAG, "从NFC接收蓝牙信息: $deviceName ($deviceAddress)")
                 Toast.makeText(context, "从NFC接收蓝牙信息: $deviceName", Toast.LENGTH_LONG).show()
                 
-                // 连接到设备
-                connectToDevice(deviceAddress, serviceUUID)
+                // 自动连接到设备
+                autoConnectToDevice(deviceAddress, serviceUUID)
             }
         } catch (e: Exception) {
             Log.e(TAG, "处理NFC蓝牙信息失败", e)
             Toast.makeText(context, "处理NFC数据失败", Toast.LENGTH_SHORT).show()
         }
+    }
+    
+    fun autoConnectToDevice(deviceAddress: String, serviceUUID: UUID = SERVICE_UUID) {
+        if (isConnecting) {
+            Log.d(TAG, "已经在连接中")
+            return
+        }
+        
+        if (!hasBluetoothPermissions()) {
+            Log.e(TAG, "缺少蓝牙权限，无法自动连接设备")
+            stateListener?.onConnectionFailed("缺少蓝牙权限")
+            return
+        }
+        
+        isConnecting = true
+        Thread {
+            try {
+                val device = bluetoothAdapter?.getRemoteDevice(deviceAddress)
+                device?.let {
+                    try {
+                        Log.d(TAG, "自动连接到设备: ${it.name}")
+                        
+                        // 确保蓝牙已启用
+                        if (!isBluetoothEnabled()) {
+                            Log.d(TAG, "蓝牙未启用，正在启用...")
+                            enableBluetooth()
+                            // 等待蓝牙启用
+                            Thread.sleep(2000)
+                        }
+                        
+                        // 取消正在进行的发现
+                        try {
+                            bluetoothAdapter?.cancelDiscovery()
+                        } catch (e: SecurityException) {
+                            Log.w(TAG, "权限被拒绝，无法取消设备发现", e)
+                        }
+                        
+                        // 创建socket连接
+                        val socket = it.createRfcommSocketToServiceRecord(serviceUUID)
+                        socket.connect()
+                        
+                        clientSocket = socket
+                        isConnecting = false
+                        
+                        Log.d(TAG, "自动连接成功: ${it.name}")
+                        stateListener?.onDeviceConnected(it)
+                        
+                        // 可以在这里开始文件传输
+                    } catch (e: SecurityException) {
+                        Log.e(TAG, "权限被拒绝，无法自动连接设备", e)
+                        stateListener?.onConnectionFailed("权限被拒绝")
+                        isConnecting = false
+                    }
+                } ?: run {
+                    Log.e(TAG, "未找到设备: $deviceAddress")
+                    stateListener?.onConnectionFailed("未找到设备")
+                    isConnecting = false
+                }
+            } catch (e: IOException) {
+                Log.e(TAG, "自动连接失败", e)
+                stateListener?.onConnectionFailed(e.message ?: "自动连接失败")
+                isConnecting = false
+            }
+        }.start()
     }
     
     fun startDiscovery() {
