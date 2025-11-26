@@ -41,8 +41,11 @@ import androidx.compose.runtime.mutableStateOf
 import coil.compose.AsyncImage
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.foundation.*
@@ -59,7 +62,7 @@ fun FileSelectPage(
     selectedFiles: List<Uri>,
     onPhotoPicker: () -> Unit,
     onVideoPicker: () -> Unit,
-    onFilePicker: (mime: String) -> Unit,
+    onFilePicker: (mimeTypes: Array<String>) -> Unit,
     onFolderPicker: () -> Unit,
     onSend: (List<Uri>) -> Unit,
     onFileSelectionChange: (List<Uri>) -> Unit, // 新增：处理文件选择状态变化
@@ -185,14 +188,14 @@ fun FileSelectPage(
             FileTypeOption(
                 title = "文件",
                 icon = Icons.Default.Description,
-                onClick = { onFilePicker("*/*") },  // 保持原逻辑
+                onClick = { onFilePicker(arrayOf("*/*")) },  // 保持原逻辑
                 modifier = Modifier.weight(1f)
             )
 
             FileTypeOption(
                 title = "文件夹",
                 icon = Icons.Default.Folder,
-                onClick = { onFolderPicker() },     // 如果你想接文件夹选择器
+                onClick = { onFilePicker(arrayOf("*/*"))  },     // 如果你想接文件夹选择器
                 modifier = Modifier.weight(1f)
             )
         }

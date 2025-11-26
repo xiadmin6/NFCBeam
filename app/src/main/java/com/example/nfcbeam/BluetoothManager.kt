@@ -138,7 +138,12 @@ class BluetoothManager(private val context: Context) {
         }
         return try {
             val deviceName = bluetoothAdapter?.name ?: "Unknown"
-            val deviceAddress = bluetoothAdapter?.address ?: "Unknown"
+            val deviceAddress = try {
+                bluetoothAdapter?.address ?: "Unknown"
+            } catch (e: SecurityException) {
+                Log.w(TAG, "无法获取设备地址，权限被拒绝", e)
+                "Unknown"
+            }
             "$deviceName|$deviceAddress|${SERVICE_UUID}"
         } catch (e: SecurityException) {
             Log.e(TAG, "权限被拒绝，无法获取蓝牙信息", e)

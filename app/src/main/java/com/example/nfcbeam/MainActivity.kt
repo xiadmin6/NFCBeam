@@ -35,6 +35,14 @@ import com.example.nfcbeam.ui.screens.TransferCompleteScreen
 import com.example.nfcbeam.ui.theme.NFCBeamTheme
 import androidx.activity.OnBackPressedCallback
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.with
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+
 
 class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     
@@ -62,18 +70,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
         }
     }
     
-    // 文件选择器
+    // 文件选择器 - 支持多选
     private val filePickerLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        uri?.let {
-            selectedFiles = listOf(it)
-            currentScreen = Screen.TRANSFER_IN_PROGRESS
-        }
-    }
-    
-    // 多文件选择器
-    private val multipleFilesPickerLauncher = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isNotEmpty()) {
@@ -81,6 +79,7 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
             currentScreen = Screen.TRANSFER_IN_PROGRESS
         }
     }
+    
     
     // 图片选择器
     private val imagePickerLauncher = registerForActivityResult(
@@ -164,8 +163,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
                         onVideoPicker = {
                             videoPickerLauncher.launch(arrayOf("video/*"))
                         },
-                        onFilePicker = { mime ->
-                            filePickerLauncher.launch(arrayOf(mime))
+                        onFilePicker = { mimeTypes ->
+                            filePickerLauncher.launch(mimeTypes)
                         },
                         onFolderPicker = {
                             folderPickerLauncher.launch(null)
@@ -518,6 +517,7 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     }
 }
 
+@OptIn(ExperimentalAnimationApi::class)
 @Composable
 fun NFCBeamApp(
     currentScreen: Screen,
@@ -533,7 +533,7 @@ fun NFCBeamApp(
     onRetryTransfer: () -> Unit,
     onPhotoPicker: () -> Unit,
     onVideoPicker: () -> Unit,
-    onFilePicker: (String) -> Unit,
+    onFilePicker: (Array<String>) -> Unit,
     onFolderPicker: () -> Unit,
     transferProgress: Float,
     onRequestPermissions: () -> Unit,
@@ -542,62 +542,72 @@ fun NFCBeamApp(
     var selectedFiles by remember { mutableStateOf<List<Uri>>(emptyList()) }
     val context = LocalContext.current
 
-    when (currentScreen) {
-        Screen.HOME -> {
-            HomeScreen(
-                isNfcConnected = isNfcConnected,
-                isSenderMode = isSenderMode,
-                onSendFiles = {
-                    // NFC连接建立后自动跳转到文件选择页面
-                    onScreenChange(Screen.FILE_SELECT)
-                },
-                onReceiveFiles = {
-                    // 进入接收模式
-                    onScreenChange(Screen.TRANSFER_IN_PROGRESS)
-                },
-                onToggleMode = {
-                    (context as? MainActivity)?.toggleMode()
-                }
-            )
-        }
-        Screen.FILE_SELECT -> {
-            FileSelectPage(
-                bluetoothDeviceName = bluetoothDeviceName,
-                selectedFiles = selectedFiles,
-                onPhotoPicker = onPhotoPicker,
-                onVideoPicker = onVideoPicker,
-                onFilePicker = onFilePicker,
-                onFolderPicker = onFolderPicker,
-                onSend = { files ->
-                    selectedFiles = files          // 1. 内部更新
-                    onFilesSelected(files)         // 2. 通知外部（用于传输页）
-                    onScreenChange(Screen.TRANSFER_IN_PROGRESS)
-                },
-                onFileSelectionChange = { files ->
-                    selectedFiles = files          // 仅内部刷新 UI
-                }
-            )
-        }
-        Screen.TRANSFER_IN_PROGRESS -> {
-            TransferInProgressScreen(
-                transferStatus = transferStatus,
-                onCancel = onBackToHome,
-                onTransferComplete = { success ->
-                    // 使用局部变量而不是重新赋值val
-                    val successState = success
-                    val newScreen = Screen.TRANSFER_COMPLETE
-                    onScreenChange(newScreen)
-                }
-            )
-        }
-        Screen.TRANSFER_COMPLETE -> {
-            TransferCompleteScreen(
-                isSuccess = isTransferSuccess,
-                transferredFiles = transferredFiles,
-                totalSize = "计算中...", // 实际应用中应该计算真实大小
-                onBackToHome = onBackToHome,
-                onRetry = onRetryTransfer
-            )
+    AnimatedContent(
+        targetState = currentScreen,
+        transitionSpec = {
+            val direction = if (targetState.ordinal > initialState.ordinal) 1 else -1
+            slideInHorizontally { w -> direction * w } + fadeIn() with
+                    slideOutHorizontally { w -> -direction * w } + fadeOut()
+        },
+        label = "screen_transition"
+    ) { targetScreen ->
+        when (targetScreen) {
+            Screen.HOME -> {
+                HomeScreen(
+                    isNfcConnected = isNfcConnected,
+                    isSenderMode = isSenderMode,
+                    onSendFiles = {
+                        // NFC连接建立后自动跳转到文件选择页面
+                        onScreenChange(Screen.FILE_SELECT)
+                    },
+                    onReceiveFiles = {
+                        // 进入接收模式
+                        onScreenChange(Screen.TRANSFER_IN_PROGRESS)
+                    },
+                    onToggleMode = {
+                        (context as? MainActivity)?.toggleMode()
+                    }
+                )
+            }
+            Screen.FILE_SELECT -> {
+                FileSelectPage(
+                    bluetoothDeviceName = bluetoothDeviceName,
+                    selectedFiles = selectedFiles,
+                    onPhotoPicker = onPhotoPicker,
+                    onVideoPicker = onVideoPicker,
+                    onFilePicker = onFilePicker,
+                    onFolderPicker = onFolderPicker,
+                    onSend = { files ->
+                        selectedFiles = files          // 1. 内部更新
+                        onFilesSelected(files)         // 2. 通知外部（用于传输页）
+                        onScreenChange(Screen.TRANSFER_IN_PROGRESS)
+                    },
+                    onFileSelectionChange = { files ->
+                        selectedFiles = files          // 仅内部刷新 UI
+                    }
+                )
+            }
+            Screen.TRANSFER_IN_PROGRESS -> {
+                TransferInProgressScreen(
+                    transferStatus = transferStatus,
+                    onCancel = onBackToHome,
+                    onTransferComplete = { success ->
+                        // 使用局部变量而不是重新赋值val
+                        val successState = success
+                        val newScreen = Screen.TRANSFER_COMPLETE
+                        onScreenChange(newScreen)
+                    }
+                )
+            }
+            Screen.TRANSFER_COMPLETE -> {
+                TransferCompleteScreen(
+                    isSuccess = isTransferSuccess,
+                    transferredFiles = transferredFiles,
+                    totalSize = "计算中...", // 实际应用中应该计算真实大小
+                    onBackToHome = onBackToHome,
+                    onRetry = onRetryTransfer
+                )
+            }
         }
     }
 }
