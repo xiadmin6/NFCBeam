@@ -42,6 +42,8 @@ import androidx.compose.animation.with
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import android.nfc.tech.Ndef
+import android.nfc.Tag
 
 
 class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
@@ -121,7 +123,7 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     private var isNfcConnected by mutableStateOf(false)
     private var bluetoothDeviceName by mutableStateOf("")
     private var isSenderMode by mutableStateOf(true)
-    private var hceService: HceCardService? = null
+    private var nfcPeerToPeerEnabled by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -168,7 +170,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
                         },
                         onFolderPicker = {
                             folderPickerLauncher.launch(null)
-                        }
+                        },
+                        onNfcTouch = { handleNfcTouch() }
                     )
                 }
             }
@@ -282,43 +285,131 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     // 更新模式配置
     private fun updateModeConfiguration() {
         if (isSenderMode) {
-            // 发送端模式：停止蓝牙服务器，准备通过NFC发送蓝牙信息
             bluetoothManager.stopBluetoothServer()
-            // 准备蓝牙信息用于NFC传输
             val btInfo = bluetoothManager.getBluetoothInfoForNFC()
             Log.d("Mode", "发送端模式，蓝牙信息: $btInfo")
+            // 把自己当成“读卡器”去扫对方
+            enableReaderMode(true)
         } else {
-            // 接收端模式：启动蓝牙服务器等待连接，激活HCE服务
             bluetoothManager.startBluetoothServer()
-            // 激活HCE服务
-            activateHceService()
-            Log.d("Mode", "接收端模式，启动蓝牙服务器和HCE服务")
+            // 接收端：把自己当成“标签”，继续用前台分发
+            enableReaderMode(false)
+            Log.d("Mode", "接收端模式，启动蓝牙服务器")
         }
     }
     
-    // 激活HCE服务
-    private fun activateHceService() {
-        try {
-            // 设置HCE服务中的蓝牙信息
-            val btInfo = bluetoothManager.getBluetoothInfoForNFC()
-            // 这里应该通过某种方式将蓝牙信息传递给HCE服务
-            // 在实际实现中，可能需要使用广播或共享首选项
-            Log.d("HCE", "HCE服务激活，蓝牙信息: $btInfo")
-        } catch (e: Exception) {
-            Log.e("HCE", "激活HCE服务失败", e)
+    // 启用NFC点对点模式
+    private fun enableNfcPeerToPeer(isSender: Boolean) {
+        nfcPeerToPeerEnabled = true
+        if (isSender) {
+            Log.d("NFC", "启用NFC点对点发送模式")
+        } else {
+            Log.d("NFC", "启用NFC点对点接收模式")
+        }
+    }
+
+    private fun publishStaticNdef() {
+        if (!::nfcAdapter.isInitialized) return
+        val btInfo = bluetoothManager.getBluetoothInfoForNFC()
+        val msg = NdefMessage(
+            NdefRecord.createTextRecord("en", "BT:$btInfo")
+        )
+        // 设置前台分发时系统会把它当成“标签”返回给对端
+        nfcAdapter.enableForegroundDispatch(
+            this,
+            PendingIntent.getActivity(this, 0,
+                Intent(this, javaClass).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_MUTABLE),
+            arrayOf(IntentFilter(NfcAdapter.ACTION_NDEF_DISCOVERED).apply {
+                addDataType("text/plain")
+            }),
+            null
+        )
+    }
+    
+    // 启用NFC点对点接收模式
+    private fun enableNfcPeerToPeerReceiver() {
+        if (::nfcAdapter.isInitialized && nfcAdapter != null) {
+            // 设置NFC点对点接收模式
+//            nfcAdapter.setNdefPushMessageCallback(null, this)
+            Log.d("NFC", "NFC点对点接收模式已启用")
+        }
+    }
+    
+    // 通过NFC点对点发送数据
+    private fun sendNfcPeerToPeer(data: String) {
+        if (::nfcAdapter.isInitialized && nfcAdapter != null) {
+            try {
+                val message = NdefMessage(
+                    arrayOf(
+                        NdefRecord.createMime(
+                            "application/vnd.com.example.nfcbeam",
+                            data.toByteArray(Charsets.UTF_8)
+                        )
+                    )
+                )
+                
+                // 设置要推送的NDEF消息
+//                nfcAdapter.setNdefPushMessage(message, this)
+//                Log.d("NFC", "NFC点对点消息已设置: $data")
+                
+                // 启用NFC点对点推送
+//                nfcAdapter.enableForegroundNdefPush(this, message)
+//                Log.d("NFC", "NFC点对点推送已启用")
+                
+            } catch (e: Exception) {
+                Log.e("NFC", "设置NFC点对点消息失败", e)
+            }
+        }
+    }
+
+    private var nfcReaderModeEnabled = false
+
+    private fun enableReaderMode(enable: Boolean) {
+        if (!::nfcAdapter.isInitialized) return
+        if (enable) {
+            val flags = NfcAdapter.FLAG_READER_NFC_A or
+                    NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK.inv() or
+                    NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
+            nfcAdapter.enableReaderMode(
+                this,
+                { tag ->
+                    // 读到标签（对方手机）后解析 NDEF
+                    val ndef = Ndef.get(tag)
+                    if (ndef == null) {
+                        Log.d("NFC", "Tag 不支持 NDEF")
+                        return@enableReaderMode
+                    }
+                    try {
+                        ndef.connect()
+                        val msg = ndef.cachedNdefMessage ?: ndef.ndefMessage
+                        processNdefMessage(msg)
+                        ndef.close()
+                    } catch (e: Exception) {
+                        Log.e("NFC", "读 NDEF 失败", e)
+                    }
+                },
+                flags,
+                null
+            )
+            Log.d("NFC", "ReaderMode 已打开")
+        } else {
+            nfcAdapter.disableReaderMode(this)
+            Log.d("NFC", "ReaderMode 已关闭")
         }
     }
     
     // 处理NFC触碰事件
     fun handleNfcTouch() {
         if (isSenderMode) {
-            // 发送端：通过NFC发送蓝牙信息
+            // 发送端：通过NFC点对点发送蓝牙信息
             val btInfo = bluetoothManager.getBluetoothInfoForNFC()
-            sendNfcData("BT:$btInfo")
-            Log.d("NFC", "发送端发送蓝牙信息: $btInfo")
+            sendNfcPeerToPeer("BT:$btInfo")
+            Log.d("NFC", "发送端通过NFC点对点发送蓝牙信息: $btInfo")
         } else {
-            // 接收端：HCE服务已激活，等待NFC读取
-            Log.d("NFC", "接收端等待NFC读取")
+            // 接收端：启用NFC点对点接收模式
+            enableNfcPeerToPeerReceiver()
+            Log.d("NFC", "接收端启用NFC点对点接收模式")
         }
     }
     
@@ -345,13 +436,23 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
                 // 解析蓝牙信息并连接
                 if (text.startsWith("BT:")) {
                     val btInfo = text.substring(3)
-                    val parts = btInfo.split(":")
-                    if (parts.size == 2) {
+                    val parts = btInfo.split("|")
+                    if (parts.size >= 2) {
                         val deviceName = parts[0]
                         val deviceAddress = parts[1]
+                        Log.d("NFC", "解析到蓝牙信息: 设备名=$deviceName, 地址=$deviceAddress")
+                        
+                        // 使用BluetoothManager处理接收到的蓝牙信息
+                        bluetoothManager.processNfcBluetoothInfo(btInfo)
+                        
+                        // 尝试连接到设备
                         bluetoothManager.connectToDevice(deviceAddress)
+                        
                         // NFC连接建立
                         isNfcConnected = true
+                        Log.d("NFC", "NFC连接建立，开始蓝牙连接")
+                    } else {
+                        Log.e("NFC", "蓝牙信息格式错误: $btInfo")
                     }
                 }
             }
@@ -382,6 +483,14 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
             val techLists = arrayOf(arrayOf<String>())
             
             nfcAdapter.enableForegroundDispatch(this, pendingIntent, filters, techLists)
+
+        }
+        if (isSenderMode) {
+            // 发送端：打开 ReaderMode 去“扫”对方
+            enableReaderMode(true)
+        } else {
+            // 接收端：把自己当成标签，供对方读取
+            publishStaticNdef()
         }
     }
     
@@ -537,7 +646,8 @@ fun NFCBeamApp(
     onFolderPicker: () -> Unit,
     transferProgress: Float,
     onRequestPermissions: () -> Unit,
-    onTransferStart: () -> Unit
+    onTransferStart: () -> Unit,
+    onNfcTouch: () -> Unit
 ) {
     var selectedFiles by remember { mutableStateOf<List<Uri>>(emptyList()) }
     val context = LocalContext.current
@@ -566,7 +676,8 @@ fun NFCBeamApp(
                     },
                     onToggleMode = {
                         (context as? MainActivity)?.toggleMode()
-                    }
+                    },
+                    onNfcTouch = onNfcTouch
                 )
             }
             Screen.FILE_SELECT -> {

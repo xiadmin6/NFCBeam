@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Nfc
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
@@ -46,6 +47,7 @@ fun HomeScreen(
     onSendFiles: () -> Unit,
     onReceiveFiles: () -> Unit,
     onToggleMode: () -> Unit,
+    onNfcTouch: () -> Unit,
     isNfcConnected: Boolean = false,
     isSenderMode: Boolean = true,
     modifier: Modifier = Modifier
@@ -175,6 +177,17 @@ fun HomeScreen(
                 
                 // 手动操作按钮（在NFC未连接时显示）
                 if (!isNfcConnected) {
+                    // NFC触碰按钮 - 用于触发NFC点对点传输
+                    ActionButton(
+                        icon = Icons.Default.Nfc,
+                        text = "NFC触碰",
+                        description = if (isSenderMode) "触碰接收端发送蓝牙信息" else "触碰发送端接收蓝牙信息",
+                        onClick = onNfcTouch,
+                        modifier = Modifier.size(32.dp)
+                    )
+                    
+                    Spacer(modifier = Modifier.height(16.dp))
+                    
                     ActionButton(
                         icon = Icons.Default.Send,
                         text = "发送文件",
@@ -252,6 +265,7 @@ fun HomeScreenPreview() {
                 onSendFiles = {},
                 onReceiveFiles = {},
                 onToggleMode = {},
+                onNfcTouch = {},
                 isNfcConnected = false
             )
         }
@@ -270,6 +284,7 @@ fun HomeScreenConnectedPreview() {
                 onSendFiles = {},
                 onReceiveFiles = {},
                 onToggleMode = {},
+                onNfcTouch = {},
                 isNfcConnected = true
             )
         }
