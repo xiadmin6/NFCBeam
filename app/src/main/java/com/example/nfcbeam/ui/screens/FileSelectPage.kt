@@ -174,14 +174,14 @@ fun FileSelectPage(
             FileTypeOption(
                 title = "照片",
                 icon = Icons.Default.Image,
-                onClick = { page = 0 },
+                onClick = { onPhotoPicker() },  // 调用多选照片选择器
                 modifier = Modifier.weight(1f)
             )
 
             FileTypeOption(
                 title = "视频",
                 icon = Icons.Default.Videocam,
-                onClick = { page = 1 },
+                onClick = { onVideoPicker() },  // 调用多选视频选择器
                 modifier = Modifier.weight(1f)
             )
 

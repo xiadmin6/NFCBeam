@@ -3,12 +3,12 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- 权限声明 -->
-    <uses-permission android:name="android.permission.NFC" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+                    android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
@@ -18,8 +18,10 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
-    <!-- NFC功能声明 -->
-    <uses-feature android:name="android.hardware.nfc" android:required="true" />
+    <!-- 声明蓝牙和BLE功能 -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+
 
     <application
         android:allowBackup="true"
@@ -40,11 +42,11 @@
             </intent-filter>
 
             <!-- NFC Intent Filter -->
-            <intent-filter>
+            <!-- <intent-filter>
                 <action android:name="android.nfc.action.NDEF_DISCOVERED" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/vnd.com.example.nfcbeam" />
-            </intent-filter>
+            </intent-filter> -->
         </activity>
         
     </application>

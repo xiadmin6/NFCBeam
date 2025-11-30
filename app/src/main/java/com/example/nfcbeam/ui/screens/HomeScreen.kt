@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Nfc
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
@@ -47,16 +47,16 @@ fun HomeScreen(
     onSendFiles: () -> Unit,
     onReceiveFiles: () -> Unit,
     onToggleMode: () -> Unit,
-    onNfcTouch: () -> Unit,
+    onBluetoothPairing: () -> Unit,
     isNfcConnected: Boolean = false,
     isSenderMode: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     
-    // NFC连接状态检测 - 如果已连接则自动进入下一阶段
+    // 蓝牙连接状态检测 - 如果已连接则自动进入下一阶段
     LaunchedEffect(isNfcConnected) {
         if (isNfcConnected) {
-            // NFC连接建立后，延迟500ms后自动进入文件选择界面
+            // 蓝牙连接建立后，延迟500ms后自动进入文件选择界面
             delay(500)
             if (isSenderMode) {
                 onSendFiles()
@@ -95,7 +95,7 @@ fun HomeScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                // NFC连接圆圈
+                // 蓝牙连接圆圈
                 Box(
                     modifier = Modifier
                         .size(200.dp)
@@ -142,13 +142,13 @@ fun HomeScreen(
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
                 
-                // NFC连接状态指示器
+                // 蓝牙连接状态指示器
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(bottom = 16.dp)
                 ) {
                     Text(
-                        text = if (isNfcConnected) "✓ NFC连接已建立" else "等待NFC连接...",
+                        text = if (isNfcConnected) "✓ 蓝牙连接已建立" else "等待蓝牙OOB配对...",
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (isNfcConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -166,7 +166,7 @@ fun HomeScreen(
                 }
                 
                 Text(
-                    text = "通过NFC快速配对，蓝牙传输文件",
+                    text = "通过蓝牙OOB快速配对，蓝牙传输文件",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -175,14 +175,14 @@ fun HomeScreen(
                 
                 Spacer(modifier = Modifier.height(32.dp))
                 
-                // 手动操作按钮（在NFC未连接时显示）
+                // 手动操作按钮（在蓝牙未连接时显示）
                 if (!isNfcConnected) {
-                    // NFC触碰按钮 - 用于触发NFC点对点传输
+                    // 蓝牙配对按钮 - 用于触发蓝牙OOB配对
                     ActionButton(
-                        icon = Icons.Default.Nfc,
-                        text = "NFC触碰",
-                        description = if (isSenderMode) "触碰接收端发送蓝牙信息" else "触碰发送端接收蓝牙信息",
-                        onClick = onNfcTouch,
+                        icon = Icons.Default.Bluetooth,
+                        text = "蓝牙配对",
+                        description = if (isSenderMode) "开始蓝牙OOB配对发送" else "开始蓝牙OOB配对接收",
+                        onClick = onBluetoothPairing,
                         modifier = Modifier.size(32.dp)
                     )
                     
@@ -265,7 +265,7 @@ fun HomeScreenPreview() {
                 onSendFiles = {},
                 onReceiveFiles = {},
                 onToggleMode = {},
-                onNfcTouch = {},
+                onBluetoothPairing = {},
                 isNfcConnected = false
             )
         }
@@ -284,7 +284,7 @@ fun HomeScreenConnectedPreview() {
                 onSendFiles = {},
                 onReceiveFiles = {},
                 onToggleMode = {},
-                onNfcTouch = {},
+                onBluetoothPairing = {},
                 isNfcConnected = true
             )
         }

@@ -1,22 +1,19 @@
 package com.example.nfcbeam
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
-import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.nfc.NdefMessage
-import android.nfc.NdefRecord
-import android.nfc.NfcAdapter
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.registerForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -42,23 +39,21 @@ import androidx.compose.animation.with
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import android.nfc.tech.Ndef
-import android.nfc.Tag
 
 
-class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
-    
-    private lateinit var nfcAdapter: NfcAdapter
+class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
+    BluetoothOOBPairingManager.OOBPairingListener {
+
     private lateinit var bluetoothManager: BluetoothManager
     private lateinit var fileTransferManager: FileTransferManager
-    
+    private lateinit var bluetoothOOBPairingManager: BluetoothOOBPairingManager
+
     // 权限请求
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.all { it.value }
         if (allGranted) {
-            initializeNFC()
             initializeBluetooth()
         }
     }
@@ -83,22 +78,22 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     }
     
     
-    // 图片选择器
+    // 图片选择器 - 支持多选
     private val imagePickerLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        uri?.let {
-            selectedFiles = listOf(it)
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            selectedFiles = uris
             currentScreen = Screen.TRANSFER_IN_PROGRESS
         }
     }
     
-    // 视频选择器
+    // 视频选择器 - 支持多选
     private val videoPickerLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        uri?.let {
-            selectedFiles = listOf(it)
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            selectedFiles = uris
             currentScreen = Screen.TRANSFER_IN_PROGRESS
         }
     }
@@ -123,14 +118,59 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     private var isNfcConnected by mutableStateOf(false)
     private var bluetoothDeviceName by mutableStateOf("")
     private var isSenderMode by mutableStateOf(true)
-    private var nfcPeerToPeerEnabled by mutableStateOf(false)
 
+    @SuppressLint("MissingPermission")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         // 初始化管理器
         bluetoothManager = BluetoothManager(this)
         fileTransferManager = FileTransferManager(this, bluetoothManager)
+        fileTransferManager.setTransferListener(this) // 设置文件传输监听器
+        bluetoothOOBPairingManager = BluetoothOOBPairingManager(this)
+        bluetoothOOBPairingManager.setPairingListener(this) // 设置监听器
+
+        // 设置蓝牙状态监听器
+        bluetoothManager.setStateListener(object : BluetoothManager.BluetoothStateListener {
+            override fun onBluetoothStateChanged(enabled: Boolean) {
+                Log.d("Bluetooth", "蓝牙状态变化: $enabled")
+            }
+
+            override fun onDeviceDiscovered(device: android.bluetooth.BluetoothDevice) {
+                Log.d("Bluetooth", "发现设备: ${device.name}")
+            }
+
+            override fun onDeviceConnected(device: android.bluetooth.BluetoothDevice) {
+                Log.d("Bluetooth", "蓝牙Socket连接成功: ${device.name}")
+                // 蓝牙连接成功后，根据模式开始相应的传输流程
+                if (isSenderMode) {
+                    // 发送端：连接成功后跳转到文件选择页面
+                    currentScreen = Screen.FILE_SELECT
+                    Log.d("Bluetooth", "发送端蓝牙连接成功，跳转到文件选择页面")
+                } else {
+                    // 接收端：连接成功后跳转到传输页面并开始接收文件
+                    currentScreen = Screen.TRANSFER_IN_PROGRESS
+                    transferStatus = FileTransferManager.TransferStatus(isConnecting = false, isTransferring = true)
+                    fileTransferManager.startFileReceiver()
+                    Log.d("Bluetooth", "接收端蓝牙连接成功，跳转到传输页面并开始接收文件")
+                }
+            }
+
+            override fun onDeviceDisconnected() {
+                Log.d("Bluetooth", "蓝牙连接断开")
+                isNfcConnected = false
+                bluetoothDeviceName = ""
+            }
+
+            override fun onConnectionFailed(error: String) {
+                Log.e("Bluetooth", "蓝牙连接失败: $error")
+                isNfcConnected = false
+                bluetoothDeviceName = ""
+            }
+        })
+
+        bluetoothOOBPairingManager.initialize()
+        bluetoothOOBPairingManager.setPairingListener(this)
 
         setContent {
             NFCBeamTheme {
@@ -145,12 +185,14 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
                         transferredFiles = transferredFiles,
                         isSenderMode = isSenderMode,
                         isTransferSuccess = isTransferSuccess,
+                        selectedFiles = selectedFiles,
                         bluetoothDeviceName = bluetoothDeviceName,
                         isNfcConnected = isNfcConnected,
                         onScreenChange = { screen -> currentScreen = screen },
                         onFilesSelected = { files ->
                             selectedFiles = files
-                            currentScreen = Screen.TRANSFER_IN_PROGRESS
+                            // 立即启动文件传输
+                            startTransfer()
                         },
                         onTransferStart = { startTransfer() },
                         onBackToHome = {
@@ -171,7 +213,16 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
                         onFolderPicker = {
                             folderPickerLauncher.launch(null)
                         },
-                        onNfcTouch = { handleNfcTouch() }
+                        onToggleMode = {          // ← 这里才是真正实现
+                            toggleMode()
+                        },
+                        onNfcTouch = { handleNfcTouch() },
+                        onFileSelectionChange = { files -> selectedFiles = files },
+                        onCancelTransfer = { fileTransferManager.cancelTransfer() },
+                        onTransferComplete = { success -> 
+                            isTransferSuccess = success
+                            currentScreen = Screen.TRANSFER_COMPLETE
+                        }
                     )
                 }
             }
@@ -180,8 +231,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
         // 请求权限
         requestPermissions()
 
-        // 处理NFC Intent
-        handleNfcIntent(intent)
+        // 由于已改用蓝牙OOB配对机制，不再需要处理NFC Intent
+        // 保留NFC初始化以兼容现有功能
 
         val callback = object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -200,19 +251,18 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     private fun requestPermissions() {
         val permissions = mutableListOf<String>()
         
-        // NFC权限
-        permissions.add(Manifest.permission.NFC)
-        
         // 蓝牙权限
         permissions.add(Manifest.permission.BLUETOOTH)
         permissions.add(Manifest.permission.BLUETOOTH_ADMIN)
-        
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+            permissions += listOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE      // ← 广告商需要的权限
+            )
         }
-        
+
         // 位置权限（蓝牙扫描需要）
         permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
         permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -230,47 +280,33 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
         } else {
             permissions += Manifest.permission.READ_EXTERNAL_STORAGE
         }
-        
-        // 检查并请求未授予的权限
+
         val permissionsToRequest = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        
+
         if (permissionsToRequest.isNotEmpty()) {
             requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
         } else {
-            initializeNFC()
             initializeBluetooth()
         }
     }
     
-    private fun initializeNFC() {
-        nfcAdapter = NfcAdapter.getDefaultAdapter(this)
-        if (nfcAdapter == null) {
-            Log.w("NFC", "设备不支持NFC")
-            return
-        }
-        
-        if (!nfcAdapter.isEnabled) {
-            Log.w("NFC", "NFC功能未启用")
-            val intent = Intent(Settings.ACTION_NFC_SETTINGS)
-            startActivity(intent)
-        }
-    }
-    
+
     private fun initializeBluetooth() {
         val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
         if (bluetoothAdapter == null) {
             Log.e("Bluetooth", "设备不支持蓝牙")
             return
         }
-        
+
         if (!bluetoothAdapter.isEnabled) {
             val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
             enableBluetoothLauncher.launch(enableBtIntent)
         } else {
             bluetoothManager.initialize()
-            // 根据当前模式初始化蓝牙服务
+            // ↓↓↓  蓝牙已打开，再初始化一次，防止权限延迟  ↓↓↓
+            bluetoothOOBPairingManager.initialize()
             updateModeConfiguration()
         }
     }
@@ -283,222 +319,77 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
     }
     
     // 更新模式配置
+    @SuppressLint("MissingPermission")
     private fun updateModeConfiguration() {
+        // 重置配对状态，解决配对重试限制问题
+        bluetoothOOBPairingManager.resetPairingState()
+        
         if (isSenderMode) {
+            // 发送端模式：停止蓝牙服务器，开始BLE扫描
             bluetoothManager.stopBluetoothServer()
-            val btInfo = bluetoothManager.getBluetoothInfoForNFC()
-            Log.d("Mode", "发送端模式，蓝牙信息: $btInfo")
-            // 把自己当成“读卡器”去扫对方
-            enableReaderMode(true)
+            bluetoothOOBPairingManager.startScanningForOOBDevices()
+            Log.d("Mode", "发送端模式，开始BLE扫描")
         } else {
+            // 接收端模式：启动蓝牙服务器，开始BLE广告
             bluetoothManager.startBluetoothServer()
-            // 接收端：把自己当成“标签”，继续用前台分发
-            enableReaderMode(false)
-            Log.d("Mode", "接收端模式，启动蓝牙服务器")
+            bluetoothOOBPairingManager.startOOBPairing()
+            Log.d("Mode", "接收端模式，启动蓝牙服务器和BLE广告")
         }
     }
     
-    // 启用NFC点对点模式
-    private fun enableNfcPeerToPeer(isSender: Boolean) {
-        nfcPeerToPeerEnabled = true
-        if (isSender) {
-            Log.d("NFC", "启用NFC点对点发送模式")
-        } else {
-            Log.d("NFC", "启用NFC点对点接收模式")
-        }
-    }
-
-    private fun publishStaticNdef() {
-        if (!::nfcAdapter.isInitialized) return
-        val btInfo = bluetoothManager.getBluetoothInfoForNFC()
-        val msg = NdefMessage(
-            NdefRecord.createTextRecord("en", "BT:$btInfo")
-        )
-        // 设置前台分发时系统会把它当成“标签”返回给对端
-        nfcAdapter.enableForegroundDispatch(
-            this,
-            PendingIntent.getActivity(this, 0,
-                Intent(this, javaClass).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                PendingIntent.FLAG_MUTABLE),
-            arrayOf(IntentFilter(NfcAdapter.ACTION_NDEF_DISCOVERED).apply {
-                addDataType("text/plain")
-            }),
-            null
-        )
-    }
+    // 以下NFC传输蓝牙信息相关方法已被蓝牙OOB配对机制替代
+    // 不再需要这些方法
     
-    // 启用NFC点对点接收模式
-    private fun enableNfcPeerToPeerReceiver() {
-        if (::nfcAdapter.isInitialized && nfcAdapter != null) {
-            // 设置NFC点对点接收模式
-//            nfcAdapter.setNdefPushMessageCallback(null, this)
-            Log.d("NFC", "NFC点对点接收模式已启用")
-        }
-    }
-    
-    // 通过NFC点对点发送数据
-    private fun sendNfcPeerToPeer(data: String) {
-        if (::nfcAdapter.isInitialized && nfcAdapter != null) {
-            try {
-                val message = NdefMessage(
-                    arrayOf(
-                        NdefRecord.createMime(
-                            "application/vnd.com.example.nfcbeam",
-                            data.toByteArray(Charsets.UTF_8)
-                        )
-                    )
-                )
-                
-                // 设置要推送的NDEF消息
-//                nfcAdapter.setNdefPushMessage(message, this)
-//                Log.d("NFC", "NFC点对点消息已设置: $data")
-                
-                // 启用NFC点对点推送
-//                nfcAdapter.enableForegroundNdefPush(this, message)
-//                Log.d("NFC", "NFC点对点推送已启用")
-                
-            } catch (e: Exception) {
-                Log.e("NFC", "设置NFC点对点消息失败", e)
-            }
-        }
-    }
-
-    private var nfcReaderModeEnabled = false
-
-    private fun enableReaderMode(enable: Boolean) {
-        if (!::nfcAdapter.isInitialized) return
-        if (enable) {
-            val flags = NfcAdapter.FLAG_READER_NFC_A or
-                    NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK.inv() or
-                    NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
-            nfcAdapter.enableReaderMode(
-                this,
-                { tag ->
-                    // 读到标签（对方手机）后解析 NDEF
-                    val ndef = Ndef.get(tag)
-                    if (ndef == null) {
-                        Log.d("NFC", "Tag 不支持 NDEF")
-                        return@enableReaderMode
-                    }
-                    try {
-                        ndef.connect()
-                        val msg = ndef.cachedNdefMessage ?: ndef.ndefMessage
-                        processNdefMessage(msg)
-                        ndef.close()
-                    } catch (e: Exception) {
-                        Log.e("NFC", "读 NDEF 失败", e)
-                    }
-                },
-                flags,
-                null
-            )
-            Log.d("NFC", "ReaderMode 已打开")
-        } else {
-            nfcAdapter.disableReaderMode(this)
-            Log.d("NFC", "ReaderMode 已关闭")
-        }
-    }
-    
-    // 处理NFC触碰事件
+    // 处理NFC触碰事件 - 现在使用蓝牙OOB配对
+    @SuppressLint("MissingPermission")
     fun handleNfcTouch() {
+        // 手动配对模式
         if (isSenderMode) {
-            // 发送端：通过NFC点对点发送蓝牙信息
-            val btInfo = bluetoothManager.getBluetoothInfoForNFC()
-            sendNfcPeerToPeer("BT:$btInfo")
-            Log.d("NFC", "发送端通过NFC点对点发送蓝牙信息: $btInfo")
+            // 发送端：开始BLE扫描寻找接收端设备
+            bluetoothOOBPairingManager.startScanningForOOBDevices()
+            Log.d("OOBPairing", "发送端开始BLE扫描寻找接收端设备")
         } else {
-            // 接收端：启用NFC点对点接收模式
-            enableNfcPeerToPeerReceiver()
-            Log.d("NFC", "接收端启用NFC点对点接收模式")
-        }
-    }
-    
-    private fun handleNfcIntent(intent: Intent) {
-        if (NfcAdapter.ACTION_NDEF_DISCOVERED == intent.action) {
-            val rawMessages = intent.getParcelableArrayExtra(NfcAdapter.EXTRA_NDEF_MESSAGES)
-            rawMessages?.let { messages ->
-                for (message in messages) {
-                    if (message is NdefMessage) {
-                        processNdefMessage(message)
-                    }
-                }
-            }
-        }
-    }
-    
-    private fun processNdefMessage(message: NdefMessage) {
-        try {
-            for (record in message.records) {
-                val payload = record.payload
-                val text = String(payload, Charsets.UTF_8)
-                Log.d("NFC", "Received NFC data: $text")
-                
-                // 解析蓝牙信息并连接
-                if (text.startsWith("BT:")) {
-                    val btInfo = text.substring(3)
-                    val parts = btInfo.split("|")
-                    if (parts.size >= 2) {
-                        val deviceName = parts[0]
-                        val deviceAddress = parts[1]
-                        Log.d("NFC", "解析到蓝牙信息: 设备名=$deviceName, 地址=$deviceAddress")
-                        
-                        // 使用BluetoothManager处理接收到的蓝牙信息
-                        bluetoothManager.processNfcBluetoothInfo(btInfo)
-                        
-                        // 尝试连接到设备
-                        bluetoothManager.connectToDevice(deviceAddress)
-                        
-                        // NFC连接建立
-                        isNfcConnected = true
-                        Log.d("NFC", "NFC连接建立，开始蓝牙连接")
-                    } else {
-                        Log.e("NFC", "蓝牙信息格式错误: $btInfo")
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("NFC", "处理NDEF消息失败", e)
+            // 接收端：开始BLE广告等待发送端连接
+            bluetoothOOBPairingManager.startOOBPairing()
+            Log.d("OOBPairing", "接收端开始BLE广告等待发送端连接")
         }
     }
     
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleNfcIntent(intent)
+        // 由于已改用蓝牙OOB配对机制，不再需要处理NFC Intent
+        Log.d("NFC", "接收到NFC Intent，但已改用蓝牙OOB配对机制")
     }
     
     override fun onResume() {
         super.onResume()
-        // 启用前台分发系统以处理NFC Intent
-        if (::nfcAdapter.isInitialized && nfcAdapter != null) {
-            val intent = Intent(this, javaClass).apply {
-                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            }
-            val pendingIntent = PendingIntent.getActivity(
-                this, 0, intent, 
-                PendingIntent.FLAG_MUTABLE
-            )
-            
-            val filters = arrayOf(IntentFilter(NfcAdapter.ACTION_NDEF_DISCOVERED))
-            
-            val techLists = arrayOf(arrayOf<String>())
-            
-            nfcAdapter.enableForegroundDispatch(this, pendingIntent, filters, techLists)
 
+        val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
+
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            Log.e("OOBPairing", "❌ BLUETOOTH_CONNECT 未授予，无法接收配对广播")
+            return
         }
-        if (isSenderMode) {
-            // 发送端：打开 ReaderMode 去“扫”对方
-            enableReaderMode(true)
-        } else {
-            // 接收端：把自己当成标签，供对方读取
-            publishStaticNdef()
+        if (bluetoothAdapter?.isEnabled != true) {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("需要蓝牙")
+                .setMessage("必须打开蓝牙才能使用 OOB 配对")
+                .setPositiveButton("去打开") { _, _ ->
+                    startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                }
+                .setNegativeButton("退出") { _, _ -> finish() }
+                .setCancelable(false)
+                .show()
+            return
         }
+        updateModeConfiguration()
     }
     
     override fun onPause() {
         super.onPause()
-        if (::nfcAdapter.isInitialized && nfcAdapter != null) {
-            nfcAdapter.disableForegroundDispatch(this)
-        }
+//        if (::nfcAdapter.isInitialized && nfcAdapter != null) {
+//            nfcAdapter.disableForegroundDispatch(this)
+//        }
     }
     
     private fun startTransfer() {
@@ -519,38 +410,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
         isTransferSuccess = true
     }
     
-    // 发送NFC数据
-    fun sendNfcData(deviceInfo: String) {
-        if (::nfcAdapter.isInitialized && nfcAdapter != null) {
-            val message = NdefMessage(
-                arrayOf(
-                    NdefRecord.createMime(
-                        "application/vnd.com.example.nfcbeam",
-                        deviceInfo.toByteArray(Charsets.UTF_8)
-                    )
-                )
-            )
-            // 使用前台分发系统来推送NFC消息
-            val intent = Intent(this, javaClass).apply {
-                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            }
-            val pendingIntent = PendingIntent.getActivity(
-                this, 0, intent, 
-                PendingIntent.FLAG_MUTABLE
-            )
-            
-            val filters = arrayOf(IntentFilter(NfcAdapter.ACTION_NDEF_DISCOVERED))
-            val techLists = arrayOf(arrayOf<String>())
-            
-            nfcAdapter.enableForegroundDispatch(this, pendingIntent, filters, techLists)
-        }
-    }
-    
-    // 获取蓝牙信息用于NFC传输
-    fun getBluetoothInfoForNfc(): String {
-        // 使用BluetoothManager来获取蓝牙信息，它会处理权限检查
-        return bluetoothManager.getBluetoothInfoForNFC()
-    }
+    // 以下方法已被蓝牙OOB配对机制替代，不再需要
+    // sendNfcData() 和 getBluetoothInfoForNfc() 方法已移除
 
     // TransferListener接口实现
     override fun onTransferStarted(totalFiles: Int, totalSize: Long) {
@@ -624,101 +485,196 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener {
         transferProgress = 0f
         currentScreen = Screen.HOME
     }
+
+    /* ================  OOBPairingListener 接口实现 ================ */
+    override fun onPairingCodeGenerated(code: String) {
+        Log.d("OOBPairing", "配对码生成: $code")
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun onDeviceDiscovered(device: android.bluetooth.BluetoothDevice, pairingCode: String) {
+        Log.d("OOBPairing", "发现设备: ${device.name ?: "Unknown"}, 配对码: $pairingCode")
+        // 自动使用配对码连接设备
+        bluetoothOOBPairingManager.connectWithPairingCode(pairingCode)
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun onPairingStarted(device: android.bluetooth.BluetoothDevice) {
+        Log.d("OOBPairing", "蓝牙OOB配对开始: ${device.name ?: "Unknown"}")
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun onPairingCompleted(device: BluetoothDevice) {
+        val connectGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH_CONNECT
+        ) == PackageManager.PERMISSION_GRANTED
+        Log.d("OOBPairing", "BLUETOOTH_CONNECT granted: $connectGranted")
+
+        // 获取设备名称（需要权限检查）
+        val deviceName = if (connectGranted) {
+            device.name ?: "Unknown Device"
+        } else {
+            "Unknown Device"
+        }
+        
+        // 更新设备名称状态
+        bluetoothDeviceName = deviceName
+        Log.d("OOBPairing", "配对完成 device.name: $deviceName, address: ${device.address}")
+        
+        // 根据设备模式决定跳转页面
+        if (isSenderMode) {
+            // 发送端：跳转至文件选择页面
+            currentScreen = Screen.FILE_SELECT
+            Log.d("OOBPairing", "发送端跳转至文件选择页面")
+        } else {
+            // 接收端：配对完成，等待Socket连接建立
+            // Socket连接建立后会在 onDeviceConnected 回调中跳转到传输页面
+            Log.d("OOBPairing", "接收端配对完成，等待Socket连接建立")
+        }
+    }
+
+    override fun onPairingFailed(error: String) {
+        Log.e("OOBPairing", "配对失败: $error")
+    }
+
+    override fun onAdvertisingStarted() {
+        Log.d("OOBPairing", "BLE广告已启动")
+    }
+
+    override fun onAdvertisingStopped() {
+        Log.d("OOBPairing", "BLE广告已停止")
+    }
+
+    override fun onScanStarted() {
+        Log.d("OOBPairing", "BLE扫描已启动")
+    }
+
+    override fun onScanStopped() {
+        Log.d("OOBPairing", "BLE扫描已停止")
+    }
+
+    override fun onWaitingForRetry(remainingSeconds: Int) {
+        Log.d("OOBPairing", "等待重试配对，剩余时间: ${remainingSeconds}秒")
+        // 这里可以添加UI提示逻辑，比如显示倒计时提示
+        // 在实际应用中，应该更新UI状态来显示等待提示
+        if (remainingSeconds > 0) {
+            // 显示等待提示
+            Log.i("OOBPairing", "配对失败，等待${remainingSeconds}秒后自动重试...")
+        } else {
+            // 等待结束，开始重试
+            Log.i("OOBPairing", "等待结束，正在自动重试配对...")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun onBluetoothConnectionRequested(device: android.bluetooth.BluetoothDevice) {
+        // 获取设备名称（需要权限检查）
+        val connectGranted = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.BLUETOOTH_CONNECT
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        val deviceName = if (connectGranted) {
+            device.name ?: "Unknown Device"
+        } else {
+            "Unknown Device"
+        }
+        
+        Log.d("OOBPairing", "配对成功，请求建立蓝牙连接: $deviceName / ${device.address}")
+        
+        // 更新连接状态和设备名称
+        isNfcConnected = true
+        bluetoothDeviceName = deviceName
+        
+        // 建立实际的蓝牙连接
+        if (isSenderMode) {
+            // 发送端：连接到接收端设备
+            bluetoothManager.connectToDevice(device.address)
+            Log.d("OOBPairing", "发送端正在连接到设备: ${device.address}")
+        } else {
+            // 接收端：设备已经作为服务器运行，等待连接
+            // 注意：服务器应该已经在 updateModeConfiguration() 中启动
+            Log.d("OOBPairing", "接收端已启动服务器，等待发送端连接")
+        }
+    }
 }
 
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
 fun NFCBeamApp(
     currentScreen: Screen,
+    transferProgress: Float,
     transferStatus: FileTransferManager.TransferStatus,
     transferredFiles: List<String>,
-    isTransferSuccess: Boolean,
-    isNfcConnected: Boolean,
     isSenderMode: Boolean,
+    isTransferSuccess: Boolean,
     bluetoothDeviceName: String,
+    isNfcConnected: Boolean,
     onScreenChange: (Screen) -> Unit,
-    onFilesSelected: (List<Uri>) -> Unit,
+    onFilesSelected: (List<android.net.Uri>) -> Unit,
+    onTransferStart: () -> Unit,
     onBackToHome: () -> Unit,
     onRetryTransfer: () -> Unit,
+    onRequestPermissions: () -> Unit,
+    selectedFiles: List<Uri>,
     onPhotoPicker: () -> Unit,
     onVideoPicker: () -> Unit,
     onFilePicker: (Array<String>) -> Unit,
     onFolderPicker: () -> Unit,
-    transferProgress: Float,
-    onRequestPermissions: () -> Unit,
-    onTransferStart: () -> Unit,
-    onNfcTouch: () -> Unit
+    onNfcTouch: () -> Unit,
+    onFileSelectionChange: (List<android.net.Uri>) -> Unit,
+    onCancelTransfer: () -> Unit,
+    onTransferComplete: (Boolean) -> Unit,
+    onToggleMode: () -> Unit,
 ) {
-    var selectedFiles by remember { mutableStateOf<List<Uri>>(emptyList()) }
-    val context = LocalContext.current
-
     AnimatedContent(
         targetState = currentScreen,
         transitionSpec = {
-            val direction = if (targetState.ordinal > initialState.ordinal) 1 else -1
-            slideInHorizontally { w -> direction * w } + fadeIn() with
-                    slideOutHorizontally { w -> -direction * w } + fadeOut()
+            if (targetState.ordinal > initialState.ordinal) {
+                slideInHorizontally { width -> width } + fadeIn() with
+                        slideOutHorizontally { width -> -width } + fadeOut()
+            } else {
+                slideInHorizontally { width -> -width } + fadeIn() with
+                        slideOutHorizontally { width -> width } + fadeOut()
+            }
         },
         label = "screen_transition"
-    ) { targetScreen ->
-        when (targetScreen) {
-            Screen.HOME -> {
-                HomeScreen(
-                    isNfcConnected = isNfcConnected,
-                    isSenderMode = isSenderMode,
-                    onSendFiles = {
-                        // NFC连接建立后自动跳转到文件选择页面
-                        onScreenChange(Screen.FILE_SELECT)
-                    },
-                    onReceiveFiles = {
-                        // 进入接收模式
-                        onScreenChange(Screen.TRANSFER_IN_PROGRESS)
-                    },
-                    onToggleMode = {
-                        (context as? MainActivity)?.toggleMode()
-                    },
-                    onNfcTouch = onNfcTouch
-                )
-            }
-            Screen.FILE_SELECT -> {
-                FileSelectPage(
-                    bluetoothDeviceName = bluetoothDeviceName,
-                    selectedFiles = selectedFiles,
-                    onPhotoPicker = onPhotoPicker,
-                    onVideoPicker = onVideoPicker,
-                    onFilePicker = onFilePicker,
-                    onFolderPicker = onFolderPicker,
-                    onSend = { files ->
-                        selectedFiles = files          // 1. 内部更新
-                        onFilesSelected(files)         // 2. 通知外部（用于传输页）
-                        onScreenChange(Screen.TRANSFER_IN_PROGRESS)
-                    },
-                    onFileSelectionChange = { files ->
-                        selectedFiles = files          // 仅内部刷新 UI
-                    }
-                )
-            }
-            Screen.TRANSFER_IN_PROGRESS -> {
-                TransferInProgressScreen(
-                    transferStatus = transferStatus,
-                    onCancel = onBackToHome,
-                    onTransferComplete = { success ->
-                        // 使用局部变量而不是重新赋值val
-                        val successState = success
-                        val newScreen = Screen.TRANSFER_COMPLETE
-                        onScreenChange(newScreen)
-                    }
-                )
-            }
-            Screen.TRANSFER_COMPLETE -> {
-                TransferCompleteScreen(
-                    isSuccess = isTransferSuccess,
-                    transferredFiles = transferredFiles,
-                    totalSize = "计算中...", // 实际应用中应该计算真实大小
-                    onBackToHome = onBackToHome,
-                    onRetry = onRetryTransfer
-                )
-            }
+    ) { screen ->
+        when (screen) {
+            Screen.HOME -> HomeScreen(
+                onSendFiles = { onScreenChange(Screen.FILE_SELECT) },
+                onReceiveFiles = { onScreenChange(Screen.TRANSFER_IN_PROGRESS) },
+                onToggleMode = { onToggleMode() },
+                onBluetoothPairing = { onNfcTouch() },
+                isNfcConnected = isNfcConnected,
+                isSenderMode = isSenderMode
+            )
+            Screen.FILE_SELECT -> FileSelectPage(
+                bluetoothDeviceName = bluetoothDeviceName,
+                selectedFiles = selectedFiles, // 使用实际的状态变量
+                onPhotoPicker = onPhotoPicker,
+                onVideoPicker = onVideoPicker,
+                onFilePicker = onFilePicker,
+                onFolderPicker = onFolderPicker,
+                onSend = onFilesSelected,
+                onFileSelectionChange = onFileSelectionChange
+            )
+            Screen.TRANSFER_IN_PROGRESS -> TransferInProgressScreen(
+                transferStatus = transferStatus,
+                onCancel = { 
+                    onCancelTransfer()
+                    onBackToHome()
+                },
+                onTransferComplete = onTransferComplete
+            )
+            Screen.TRANSFER_COMPLETE -> TransferCompleteScreen(
+                isSuccess = isTransferSuccess,
+                transferredFiles = transferredFiles,
+                totalSize = "0 MB", // 这里可以添加实际计算文件大小的逻辑
+                onBackToHome = onBackToHome,
+                onRetry = onRetryTransfer
+            )
         }
     }
 }

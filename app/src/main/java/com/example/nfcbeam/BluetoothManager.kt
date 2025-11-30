@@ -131,45 +131,6 @@ class BluetoothManager(private val context: Context) {
         return bluetoothAdapter?.isEnabled == true
     }
     
-    fun getBluetoothInfoForNFC(): String {
-        if (!hasBluetoothPermissions()) {
-            Log.e(TAG, "缺少蓝牙权限，无法获取蓝牙信息")
-            return "Unknown|Unknown|${SERVICE_UUID}"
-        }
-        return try {
-            val deviceName = bluetoothAdapter?.name ?: "Unknown"
-            val deviceAddress = try {
-                bluetoothAdapter?.address ?: "Unknown"
-            } catch (e: SecurityException) {
-                Log.w(TAG, "无法获取设备地址，权限被拒绝", e)
-                "Unknown"
-            }
-            "$deviceName|$deviceAddress|${SERVICE_UUID}"
-        } catch (e: SecurityException) {
-            Log.e(TAG, "权限被拒绝，无法获取蓝牙信息", e)
-            "Unknown|Unknown|${SERVICE_UUID}"
-        }
-    }
-    
-    fun processNfcBluetoothInfo(bluetoothInfo: String) {
-        try {
-            val parts = bluetoothInfo.split("|")
-            if (parts.size >= 3) {
-                val deviceName = parts[0]
-                val deviceAddress = parts[1]
-                val serviceUUID = UUID.fromString(parts[2])
-                
-                Log.d(TAG, "从NFC接收蓝牙信息: $deviceName ($deviceAddress)")
-                Toast.makeText(context, "从NFC接收蓝牙信息: $deviceName", Toast.LENGTH_LONG).show()
-                
-                // 自动连接到设备
-                autoConnectToDevice(deviceAddress, serviceUUID)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "处理NFC蓝牙信息失败", e)
-            Toast.makeText(context, "处理NFC数据失败", Toast.LENGTH_SHORT).show()
-        }
-    }
     
     fun autoConnectToDevice(deviceAddress: String, serviceUUID: UUID = SERVICE_UUID) {
         if (isConnecting) {
@@ -370,11 +331,22 @@ class BluetoothManager(private val context: Context) {
                     try {
                         val socket = serverSocket?.accept()
                         socket?.let {
-                            Log.d(TAG, "客户端已连接")
-                            clientSocket = it
-                            stateListener?.onDeviceConnected(it.remoteDevice)
-                            
-                            // 可以在这里处理文件接收
+                            try {
+                                val deviceName = if (hasBluetoothPermissions()) {
+                                    it.remoteDevice.name ?: "Unknown"
+                                } else {
+                                    "Unknown"
+                                }
+                                Log.d(TAG, "客户端已连接: $deviceName")
+                                clientSocket = it
+                                stateListener?.onDeviceConnected(it.remoteDevice)
+                                
+                                // 服务器接受连接后继续监听新连接
+                            } catch (e: SecurityException) {
+                                Log.e(TAG, "权限被拒绝，无法获取设备信息", e)
+                                clientSocket = it
+                                stateListener?.onDeviceConnected(it.remoteDevice)
+                            }
                         }
                     } catch (e: IOException) {
                         if (isServerRunning) {
