@@ -118,6 +118,9 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     private var isNfcConnected by mutableStateOf(false)
     private var bluetoothDeviceName by mutableStateOf("")
     private var isSenderMode by mutableStateOf(true)
+    
+    // 新增：标记配对是否完成
+    private var isPairingCompleted by mutableStateOf(false)
 
     @SuppressLint("MissingPermission")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -144,9 +147,13 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
                 Log.d("Bluetooth", "蓝牙Socket连接成功: ${device.name}")
                 // 蓝牙连接成功后，根据模式开始相应的传输流程
                 if (isSenderMode) {
-                    // 发送端：连接成功后跳转到文件选择页面
-                    currentScreen = Screen.FILE_SELECT
-                    Log.d("Bluetooth", "发送端蓝牙连接成功，跳转到文件选择页面")
+                    // 发送端：Socket连接成功后才跳转到文件选择页面
+                    if (isPairingCompleted) {
+                        currentScreen = Screen.FILE_SELECT
+                        Log.d("Bluetooth", "发送端蓝牙Socket连接成功，跳转到文件选择页面")
+                    } else {
+                        Log.d("Bluetooth", "发送端Socket连接成功，但配对未完成，等待配对完成")
+                    }
                 } else {
                     // 接收端：连接成功后跳转到传输页面并开始接收文件
                     currentScreen = Screen.TRANSFER_IN_PROGRESS
@@ -160,12 +167,14 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
                 Log.d("Bluetooth", "蓝牙连接断开")
                 isNfcConnected = false
                 bluetoothDeviceName = ""
+                isPairingCompleted = false
             }
 
             override fun onConnectionFailed(error: String) {
                 Log.e("Bluetooth", "蓝牙连接失败: $error")
                 isNfcConnected = false
                 bluetoothDeviceName = ""
+                isPairingCompleted = false
             }
         })
 
@@ -314,6 +323,7 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     // 切换发送/接收模式
     fun toggleMode() {
         isSenderMode = !isSenderMode
+        isPairingCompleted = false // 重置配对状态
         updateModeConfiguration()
         Log.d("Mode", "模式切换为: ${if (isSenderMode) "发送端" else "接收端"}")
     }
@@ -323,6 +333,7 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     private fun updateModeConfiguration() {
         // 重置配对状态，解决配对重试限制问题
         bluetoothOOBPairingManager.resetPairingState()
+        isPairingCompleted = false
         
         if (isSenderMode) {
             // 发送端模式：停止蓝牙服务器，开始BLE扫描
@@ -408,6 +419,7 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         transferStatus = FileTransferManager.TransferStatus()
         transferredFiles = emptyList()
         isTransferSuccess = true
+        isPairingCompleted = false
     }
     
     // 以下方法已被蓝牙OOB配对机制替代，不再需要
@@ -518,24 +530,23 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
             "Unknown Device"
         }
         
-        // 更新设备名称状态
+        // 更新设备名称状态和配对完成标记
         bluetoothDeviceName = deviceName
+        isPairingCompleted = true
         Log.d("OOBPairing", "配对完成 device.name: $deviceName, address: ${device.address}")
         
-        // 根据设备模式决定跳转页面
+        // 配对完成后不立即跳转，等待Socket连接建立
+        // Socket连接建立后会在 onDeviceConnected 回调中跳转
         if (isSenderMode) {
-            // 发送端：跳转至文件选择页面
-            currentScreen = Screen.FILE_SELECT
-            Log.d("OOBPairing", "发送端跳转至文件选择页面")
+            Log.d("OOBPairing", "发送端配对完成，等待Socket连接建立后跳转至文件选择页面")
         } else {
-            // 接收端：配对完成，等待Socket连接建立
-            // Socket连接建立后会在 onDeviceConnected 回调中跳转到传输页面
             Log.d("OOBPairing", "接收端配对完成，等待Socket连接建立")
         }
     }
 
     override fun onPairingFailed(error: String) {
         Log.e("OOBPairing", "配对失败: $error")
+        isPairingCompleted = false
     }
 
     override fun onAdvertisingStarted() {
@@ -581,21 +592,21 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
             "Unknown Device"
         }
         
-        Log.d("OOBPairing", "配对成功，请求建立蓝牙连接: $deviceName / ${device.address}")
+        Log.d("OOBPairing", "配对成功，请求建立蓝牙Socket连接: $deviceName / ${device.address}")
         
         // 更新连接状态和设备名称
         isNfcConnected = true
         bluetoothDeviceName = deviceName
         
-        // 建立实际的蓝牙连接
+        // 建立实际的蓝牙Socket连接
         if (isSenderMode) {
             // 发送端：连接到接收端设备
             bluetoothManager.connectToDevice(device.address)
-            Log.d("OOBPairing", "发送端正在连接到设备: ${device.address}")
+            Log.d("OOBPairing", "发送端正在建立Socket连接到设备: ${device.address}")
         } else {
             // 接收端：设备已经作为服务器运行，等待连接
             // 注意：服务器应该已经在 updateModeConfiguration() 中启动
-            Log.d("OOBPairing", "接收端已启动服务器，等待发送端连接")
+            Log.d("OOBPairing", "接收端已启动服务器，等待发送端Socket连接")
         }
     }
 }
