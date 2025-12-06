@@ -54,6 +54,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.geometry.Offset
 import com.example.nfcbeam.ui.components.VideoThumbnail
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 
 /* -------------------- 主页面 -------------------- */
 @Composable
@@ -70,9 +75,54 @@ fun FileSelectPage(
 ) {
     val context = LocalContext.current
     val contentResolver = context.contentResolver
+    val scope = rememberCoroutineScope()
 
-    val allImages = remember { getLocalImages(contentResolver) }
-    val allVideos = remember { getLocalVideos(contentResolver) }
+    // ✅ 修复1: 分阶段执行 - 主线程取ID + IO线程遍历
+    var allImages by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var allVideos by remember { mutableStateOf<List<MediaItem>>(emptyList()) }
+    var isLoadingImages by remember { mutableStateOf(true) }
+    var isLoadingVideos by remember { mutableStateOf(true) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+
+    // ✅ 修复2: 添加 try-catch 并提示用户
+    // ✅ 修复3: 确保所有 I/O 在 Dispatchers.IO
+    LaunchedEffect(Unit) {
+        // 在后台线程加载图片
+        scope.launch(Dispatchers.IO) {
+            try {
+                val images = getLocalImages(contentResolver)
+                withContext(Dispatchers.Main) {
+                    allImages = images
+                    isLoadingImages = false
+                    Log.d("FileSelectPage", "成功加载 ${images.size} 张图片")
+                }
+            } catch (e: Exception) {
+                Log.e("FileSelectPage", "加载图片失败", e)
+                withContext(Dispatchers.Main) {
+                    loadError = "加载图片失败: ${e.message}"
+                    isLoadingImages = false
+                }
+            }
+        }
+
+        // 在后台线程加载视频
+        scope.launch(Dispatchers.IO) {
+            try {
+                val videos = getLocalVideos(contentResolver)
+                withContext(Dispatchers.Main) {
+                    allVideos = videos
+                    isLoadingVideos = false
+                    Log.d("FileSelectPage", "成功加载 ${videos.size} 个视频")
+                }
+            } catch (e: Exception) {
+                Log.e("FileSelectPage", "加载视频失败", e)
+                withContext(Dispatchers.Main) {
+                    loadError = "加载视频失败: ${e.message}"
+                    isLoadingVideos = false
+                }
+            }
+        }
+    }
 
     var page by remember { mutableStateOf(0) }
 
@@ -174,14 +224,14 @@ fun FileSelectPage(
             FileTypeOption(
                 title = "照片",
                 icon = Icons.Default.Image,
-                onClick = { onPhotoPicker() },  // 调用多选照片选择器
+                onClick = { page = 0 },  // 调用多选照片选择器
                 modifier = Modifier.weight(1f)
             )
 
             FileTypeOption(
                 title = "视频",
                 icon = Icons.Default.Videocam,
-                onClick = { onVideoPicker() },  // 调用多选视频选择器
+                onClick = { page = 1 },  // 调用多选视频选择器
                 modifier = Modifier.weight(1f)
             )
 
@@ -195,33 +245,87 @@ fun FileSelectPage(
             FileTypeOption(
                 title = "文件夹",
                 icon = Icons.Default.Folder,
-                onClick = { onFilePicker(arrayOf("*/*"))  },     // 如果你想接文件夹选择器
+                onClick = { onFolderPicker() },
                 modifier = Modifier.weight(1f)
             )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        /* 当 page=0 照片 / page=1 视频 */
-        when (page) {
-            0 -> MediaGrid(allImages, selectedFiles, onFileSelectionChange)
-            1 -> MediaGrid(allVideos, selectedFiles, onFileSelectionChange)
+        // ✅ 显示加载状态或错误信息
+        if (loadError != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "⚠️ 加载失败",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = loadError ?: "未知错误",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "请尝试使用文件选择器",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+            }
+        } else {
+            when (page) {
+                0 -> {
+                    if (isLoadingImages) {
+                        LoadingIndicator("正在加载图片...")
+                    } else {
+                        MediaGrid(allImages, selectedFiles, onFileSelectionChange)
+                    }
+                }
+                1 -> {
+                    if (isLoadingVideos) {
+                        LoadingIndicator("正在加载视频...")
+                    } else {
+                        MediaGrid(allVideos, selectedFiles, onFileSelectionChange)
+                    }
+                }
+            }
         }
 
-        // 添加底部间距，为固定发送按钮留出空间
-        Spacer(modifier = Modifier.height(80.dp))
+        // ✅ 修改：根据是否有选中文件调整底部间距
+        Spacer(modifier = Modifier.height(if (selectedFiles.isNotEmpty()) 140.dp else 80.dp))
         }
         
-        // 固定底部的发送按钮
+        // 固定底部的发送按钮和已选文件区域
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
         ) {
             val density = LocalDensity.current
-            val maskHeight = 320.dp
+            // ✅ 修改：减小遮罩高度，因为已选文件区域变小了
+            val maskHeight = if (selectedFiles.isNotEmpty()) 280.dp else 320.dp
             val maskHeightPx = with(density) { maskHeight.toPx() }
 
+            // 1. 渐变遮罩
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -240,33 +344,128 @@ fun FileSelectPage(
                     )
             )
 
-            // 2. 发送按钮（悬浮）
-            val buttonHeight = 56.dp * 4 / 3          // 当前按钮高
-            val downOffset = buttonHeight / 4         // ↓ 下移 1/4
-
-            Card(
-                onClick = { if (selectedFiles.isNotEmpty()) onSend(selectedFiles) },
-                enabled = selectedFiles.isNotEmpty(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (selectedFiles.isNotEmpty())
-                        MaterialTheme.colorScheme.primary
-                    else
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                ),
-                elevation = CardDefaults.cardElevation(
-                    defaultElevation = if (selectedFiles.isNotEmpty()) 16.dp else 0.dp
-                ),
+            // 2. 底部内容区域（已选文件 + 发送按钮）
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 24.dp + downOffset)   // ← 这里实现下移
-                    .fillMaxWidth(0.9f)
-                    .height(buttonHeight)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
             ) {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-                    Text("发送", style = MaterialTheme.typography.bodyLarge)
+                // ✅ 修改：已选文件区域 - 改为单行横向滚动
+                if (selectedFiles.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f)
+                        ),
+                        shape = RoundedCornerShape(16.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "已选文件",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "${selectedFiles.size} 个",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            // ✅ 修改：使用 LazyRow 实现横向滚动
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(selectedFiles) { uri ->
+                                    SelectedFileThumbnail(
+                                        uri = uri,
+                                        onRemove = {
+                                            val newList = selectedFiles.filter { it != uri }
+                                            onFileSelectionChange(newList)
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 发送按钮
+                val buttonHeight = 56.dp * 4 / 3
+                val downOffset = buttonHeight / 4
+
+                Card(
+                    onClick = { if (selectedFiles.isNotEmpty()) onSend(selectedFiles) },
+                    enabled = selectedFiles.isNotEmpty(),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (selectedFiles.isNotEmpty())
+                            MaterialTheme.colorScheme.primary
+                        else
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                    ),
+                    elevation = CardDefaults.cardElevation(
+                        defaultElevation = if (selectedFiles.isNotEmpty()) 16.dp else 0.dp
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp + downOffset)
+                        .height(buttonHeight)
+                ) {
+                    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                        Text(
+                            text = if (selectedFiles.isNotEmpty()) "发送 (${selectedFiles.size})" else "发送",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
+        }
+    }
+}
+
+// ✅ 新增：加载指示器组件
+@Composable
+private fun LoadingIndicator(message: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(32.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(48.dp),
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -277,49 +476,82 @@ data class MediaItem(
 )
 
 @Composable
-private fun SelectedFileCard(uri: Uri) {
-    Card(
+private fun SelectedFileThumbnail(
+    uri: Uri,
+    onRemove: () -> Unit
+) {
+    val context = LocalContext.current
+    val contentResolver = context.contentResolver
+    val mimeType = remember(uri) { contentResolver.getType(uri) }
+    val isVideo = remember(mimeType) { mimeType?.startsWith("video/") == true }
+    val isImage = remember(mimeType) { mimeType?.startsWith("image/") == true }
+
+    // ✅ 修改：固定宽度以适应横向滚动
+    Box(
         modifier = Modifier
             .width(80.dp)
-            .height(100.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        ),
-        shape = MaterialTheme.shapes.medium
+            .height(80.dp)
+            .clip(RoundedCornerShape(8.dp))
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(8.dp),
-            contentAlignment = Alignment.Center
+        Card(
+            modifier = Modifier.fillMaxSize(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            shape = RoundedCornerShape(8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                // 根据文件类型显示不同的图标
-                val (icon, iconDescription) = getFileTypeIcon(uri)
+            Box(modifier = Modifier.fillMaxSize()) {
+                when {
+                    isImage -> {
+                        AsyncImage(
+                            model = uri,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+                    isVideo -> {
+                        VideoThumbnail(
+                            uri = uri,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    else -> {
+                        // 其他文件类型显示图标
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            val (icon, _) = getFileTypeIcon(uri)
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = null,
+                                modifier = Modifier.size(24.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
                 
-                Icon(
-                    imageVector = icon,
-                    contentDescription = iconDescription,
-                    modifier = Modifier.size(32.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                
-                Spacer(modifier = Modifier.height(4.dp))
-                
-                // 显示文件名（截取最后部分）
-                val fileName = getFileNameFromUri(uri)
-                Text(
-                    text = fileName,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Normal,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                )
+                // 删除按钮
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(2.dp)
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error)
+                        .clickable { onRemove() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "×",
+                        color = MaterialTheme.colorScheme.onError,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }
@@ -610,6 +842,7 @@ private fun getLocalImages(cr: ContentResolver): List<MediaItem> {
             }
     } catch (e: Exception) {
         Log.e("VideoDebug", "getLocalImages 失败", e)
+        throw e
     }
     Log.d("VideoDebug", "getLocalImages 返回 ${list.size} 条")
     return list
@@ -640,6 +873,7 @@ private fun getLocalVideos(cr: ContentResolver): List<MediaItem> {
             }
     } catch (e: Exception) {
         Log.e("VideoDebug", "getLocalVideos 失败", e)
+        throw e
     }
     Log.d("VideoDebug", "getLocalVideos 返回 ${list.size} 条")
     return list

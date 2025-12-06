@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.registerForActivityResult
@@ -31,7 +32,7 @@ import com.example.nfcbeam.ui.screens.TransferInProgressScreen
 import com.example.nfcbeam.ui.screens.TransferCompleteScreen
 import com.example.nfcbeam.ui.theme.NFCBeamTheme
 import androidx.activity.OnBackPressedCallback
-import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.MainScope
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -39,6 +40,9 @@ import androidx.compose.animation.with
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 
 class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
@@ -47,6 +51,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     private lateinit var bluetoothManager: BluetoothManager
     private lateinit var fileTransferManager: FileTransferManager
     private lateinit var bluetoothOOBPairingManager: BluetoothOOBPairingManager
+
+    private val mainScope = MainScope()
 
     // 权限请求
     private val requestPermissionLauncher = registerForActivityResult(
@@ -67,44 +73,75 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         }
     }
     
-    // 文件选择器 - 支持多选
+    // 文件选择器 - 支持多选，追加到已选文件列表
     private val filePickerLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
+        ActivityResultContracts.GetMultipleContents()
     ) { uris ->
         if (uris.isNotEmpty()) {
-            selectedFiles = uris
-            currentScreen = Screen.TRANSFER_IN_PROGRESS
+            // 追加新选择的文件到已有列表，去重
+            val newFiles = (selectedFiles + uris).distinct()
+            selectedFiles = newFiles
+            // 保持在文件选择页面
+            if (currentScreen != Screen.FILE_SELECT) {
+                currentScreen = Screen.FILE_SELECT
+            }
         }
     }
     
     
-    // 图片选择器 - 支持多选
+    // 图片选择器 - 支持多选（已废弃，现在使用内置网格选择）
     private val imagePickerLauncher = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isNotEmpty()) {
-            selectedFiles = uris
-            currentScreen = Screen.TRANSFER_IN_PROGRESS
+            // 追加新选择的文件到已有列表，去重
+            val newFiles = (selectedFiles + uris).distinct()
+            selectedFiles = newFiles
+            currentScreen = Screen.FILE_SELECT
         }
     }
     
-    // 视频选择器 - 支持多选
+    // 视频选择器 - 支持多选（已废弃，现在使用内置网格选择）
     private val videoPickerLauncher = registerForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isNotEmpty()) {
-            selectedFiles = uris
-            currentScreen = Screen.TRANSFER_IN_PROGRESS
+            // 追加新选择的文件到已有列表，去重
+            val newFiles = (selectedFiles + uris).distinct()
+            selectedFiles = newFiles
+            currentScreen = Screen.FILE_SELECT
         }
     }
     
-    // 文件夹选择器
+    // 文件夹选择器 - 追加到已选文件列表
     private val folderPickerLauncher = registerForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         uri?.let {
-            selectedFiles = listOf(it)
-            currentScreen = Screen.TRANSFER_IN_PROGRESS
+            // 系统固定支持这两个 flag，不需要从 Intent 取
+            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
+            try {
+                contentResolver.takePersistableUriPermission(it, takeFlags)
+            } catch (e: SecurityException) {
+                Log.e("FolderPicker", "无法获取持久化权限", e)
+                Toast.makeText(this@MainActivity, "权限授予失败", Toast.LENGTH_SHORT).show()
+                return@let
+            }
+
+            // 后台展开
+            mainScope.launch(Dispatchers.IO) {
+                val childFiles = fileTransferManager.listFilesInDirectory(it)
+                withContext(Dispatchers.Main) {
+                    if (childFiles.isNotEmpty()) {
+                        selectedFiles = (selectedFiles + childFiles).distinct()
+                        currentScreen = Screen.FILE_SELECT
+                    } else {
+                        Toast.makeText(this@MainActivity, "文件夹为空", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
         }
     }
     
@@ -114,6 +151,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     private var transferProgress by mutableStateOf(0f)
     private var transferStatus by mutableStateOf(FileTransferManager.TransferStatus())
     private var transferredFiles by mutableStateOf<List<String>>(emptyList())
+    private var transferredFileInfos by mutableStateOf<List<FileTransferManager.FileInfo>>(emptyList())
+    private var totalTransferSize by mutableStateOf(0L)
     private var isTransferSuccess by mutableStateOf(true)
     private var isNfcConnected by mutableStateOf(false)
     private var bluetoothDeviceName by mutableStateOf("")
@@ -121,6 +160,10 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     
     // 新增：标记配对是否完成
     private var isPairingCompleted by mutableStateOf(false)
+    
+    // 下载路径管理
+    private lateinit var downloadPathManager: DownloadPathManager
+    private var currentDownloadLocation by mutableStateOf(DownloadPathManager.Companion.DownloadLocation.DOWNLOADS)
 
     @SuppressLint("MissingPermission")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -132,6 +175,10 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         fileTransferManager.setTransferListener(this) // 设置文件传输监听器
         bluetoothOOBPairingManager = BluetoothOOBPairingManager(this)
         bluetoothOOBPairingManager.setPairingListener(this) // 设置监听器
+        
+        // 初始化下载路径管理器
+        downloadPathManager = DownloadPathManager(this)
+        currentDownloadLocation = downloadPathManager.getCurrentLocation()
 
         // 设置蓝牙状态监听器
         bluetoothManager.setStateListener(object : BluetoothManager.BluetoothStateListener {
@@ -144,16 +191,16 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
             }
 
             override fun onDeviceConnected(device: android.bluetooth.BluetoothDevice) {
-                Log.d("Bluetooth", "蓝牙Socket连接成功: ${device.name}")
+                Log.d("Bluetooth", "✅ 蓝牙Socket连接成功: ${device.name}")
+                
+                // 重要：只有在 Socket 真正连接成功后，才设置 isNfcConnected = true
+                // 这样 HomeScreen 的 LaunchedEffect 才会触发自动跳转
+                isNfcConnected = true
+                
                 // 蓝牙连接成功后，根据模式开始相应的传输流程
                 if (isSenderMode) {
-                    // 发送端：Socket连接成功后才跳转到文件选择页面
-                    if (isPairingCompleted) {
-                        currentScreen = Screen.FILE_SELECT
-                        Log.d("Bluetooth", "发送端蓝牙Socket连接成功，跳转到文件选择页面")
-                    } else {
-                        Log.d("Bluetooth", "发送端Socket连接成功，但配对未完成，等待配对完成")
-                    }
+                    // 发送端：Socket连接成功后，HomeScreen 会自动跳转到文件选择页面
+                    Log.d("Bluetooth", "发送端蓝牙Socket连接成功，等待自动跳转到文件选择页面")
                 } else {
                     // 接收端：连接成功后跳转到传输页面并开始接收文件
                     currentScreen = Screen.TRANSFER_IN_PROGRESS
@@ -192,11 +239,23 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
                         transferProgress = transferProgress,
                         transferStatus = transferStatus,
                         transferredFiles = transferredFiles,
+                        transferredFileInfos = transferredFileInfos,
+                        totalTransferSize = totalTransferSize,
                         isSenderMode = isSenderMode,
                         isTransferSuccess = isTransferSuccess,
                         selectedFiles = selectedFiles,
                         bluetoothDeviceName = bluetoothDeviceName,
                         isNfcConnected = isNfcConnected,
+                        currentDownloadLocation = currentDownloadLocation,
+                        onDownloadLocationChange = { location ->
+                            currentDownloadLocation = location
+                            downloadPathManager.setDownloadPath(location)
+                            Toast.makeText(
+                                this@MainActivity,
+                                "下载目录已设置为: ${location.displayName}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        },
                         onScreenChange = { screen -> currentScreen = screen },
                         onFilesSelected = { files ->
                             selectedFiles = files
@@ -216,8 +275,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
                         onVideoPicker = {
                             videoPickerLauncher.launch(arrayOf("video/*"))
                         },
-                        onFilePicker = { mimeTypes ->
-                            filePickerLauncher.launch(mimeTypes)
+                        onFilePicker = { _ ->
+                            filePickerLauncher.launch("*/*")
                         },
                         onFolderPicker = {
                             folderPickerLauncher.launch(null)
@@ -418,8 +477,11 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         transferProgress = 0f
         transferStatus = FileTransferManager.TransferStatus()
         transferredFiles = emptyList()
+        transferredFileInfos = emptyList()
+        totalTransferSize = 0L
         isTransferSuccess = true
         isPairingCompleted = false
+        isNfcConnected = false
     }
     
     // 以下方法已被蓝牙OOB配对机制替代，不再需要
@@ -461,23 +523,27 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         Log.d("Transfer", "传输进度: ${(progress * 100).toInt()}%, 文件: $currentFile/$totalFiles, 已传输: $transferredBytes/$totalBytes")
     }
 
-    override fun onTransferCompleted() {
-        Log.d("Transfer", "传输完成")
+    override fun onTransferCompleted(transferredFileList: List<FileTransferManager.FileInfo>, totalSize: Long) {
+        Log.d("Transfer", "传输完成: ${transferredFileList.size} 个文件, 总大小: $totalSize 字节")
         transferStatus = FileTransferManager.TransferStatus(
             isCompleted = true,
             isSuccess = true,
             progress = 1f,
-            totalFiles = selectedFiles.size,
-            transferredFiles = selectedFiles.size
+            totalFiles = transferredFileList.size,
+            transferredFiles = transferredFileList.size
         )
         transferProgress = 100f
         isTransferSuccess = true
-        currentScreen = Screen.TRANSFER_COMPLETE
+        isNfcConnected = false
         
-        // 更新传输完成的文件列表
-        transferredFiles = selectedFiles.map { uri ->
-            uri.lastPathSegment ?: "未知文件"
-        }
+        // 保存文件信息和总大小
+        transferredFileInfos = transferredFileList
+        totalTransferSize = totalSize
+        
+        // 更新传输完成的文件列表（用于显示）
+        transferredFiles = transferredFileList.map { it.fileName }
+        
+        currentScreen = Screen.TRANSFER_COMPLETE
     }
 
     override fun onTransferError(error: String) {
@@ -488,6 +554,7 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
             errorMessage = error
         )
         isTransferSuccess = false
+        isNfcConnected = false
         currentScreen = Screen.TRANSFER_COMPLETE
     }
 
@@ -495,6 +562,7 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         Log.d("Transfer", "传输取消")
         transferStatus = FileTransferManager.TransferStatus()
         transferProgress = 0f
+        isNfcConnected = false
         currentScreen = Screen.HOME
     }
 
@@ -594,20 +662,33 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         
         Log.d("OOBPairing", "配对成功，请求建立蓝牙Socket连接: $deviceName / ${device.address}")
         
-        // 更新连接状态和设备名称
-        isNfcConnected = true
+        // 重要：不要在这里设置 isNfcConnected = true
+        // 只有在 Socket 真正连接成功后（onDeviceConnected 回调）才设置
+        // 这里只更新设备名称
         bluetoothDeviceName = deviceName
         
-        // 建立实际的蓝牙Socket连接
+        // 建立实际的蓝牙Socket连接（异步操作）
         if (isSenderMode) {
             // 发送端：连接到接收端设备
             bluetoothManager.connectToDevice(device.address)
-            Log.d("OOBPairing", "发送端正在建立Socket连接到设备: ${device.address}")
+            Log.d("OOBPairing", "发送端正在异步建立Socket连接到设备: ${device.address}")
         } else {
             // 接收端：设备已经作为服务器运行，等待连接
             // 注意：服务器应该已经在 updateModeConfiguration() 中启动
             Log.d("OOBPairing", "接收端已启动服务器，等待发送端Socket连接")
         }
+    }
+}
+
+/**
+ * 格式化文件大小
+ */
+fun formatFileSize(bytes: Long): String {
+    return when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> String.format("%.2f KB", bytes / 1024.0)
+        bytes < 1024 * 1024 * 1024 -> String.format("%.2f MB", bytes / (1024.0 * 1024.0))
+        else -> String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
     }
 }
 
@@ -618,10 +699,14 @@ fun NFCBeamApp(
     transferProgress: Float,
     transferStatus: FileTransferManager.TransferStatus,
     transferredFiles: List<String>,
+    transferredFileInfos: List<FileTransferManager.FileInfo>,
+    totalTransferSize: Long,
     isSenderMode: Boolean,
     isTransferSuccess: Boolean,
     bluetoothDeviceName: String,
     isNfcConnected: Boolean,
+    currentDownloadLocation: DownloadPathManager.Companion.DownloadLocation,
+    onDownloadLocationChange: (DownloadPathManager.Companion.DownloadLocation) -> Unit,
     onScreenChange: (Screen) -> Unit,
     onFilesSelected: (List<android.net.Uri>) -> Unit,
     onTransferStart: () -> Unit,
@@ -659,7 +744,9 @@ fun NFCBeamApp(
                 onToggleMode = { onToggleMode() },
                 onBluetoothPairing = { onNfcTouch() },
                 isNfcConnected = isNfcConnected,
-                isSenderMode = isSenderMode
+                isSenderMode = isSenderMode,
+                currentDownloadLocation = currentDownloadLocation,
+                onDownloadLocationChange = onDownloadLocationChange
             )
             Screen.FILE_SELECT -> FileSelectPage(
                 bluetoothDeviceName = bluetoothDeviceName,
@@ -682,7 +769,8 @@ fun NFCBeamApp(
             Screen.TRANSFER_COMPLETE -> TransferCompleteScreen(
                 isSuccess = isTransferSuccess,
                 transferredFiles = transferredFiles,
-                totalSize = "0 MB", // 这里可以添加实际计算文件大小的逻辑
+                transferredFileInfos = transferredFileInfos,
+                totalSize = formatFileSize(totalTransferSize),
                 onBackToHome = onBackToHome,
                 onRetry = onRetryTransfer
             )

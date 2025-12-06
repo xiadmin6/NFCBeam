@@ -13,18 +13,27 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,6 +48,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.example.nfcbeam.DownloadPathManager
+import com.example.nfcbeam.Screen
 import com.example.nfcbeam.ui.theme.NFCBeamTheme
 import kotlinx.coroutines.delay
 
@@ -50,12 +61,16 @@ fun HomeScreen(
     onBluetoothPairing: () -> Unit,
     isNfcConnected: Boolean = false,
     isSenderMode: Boolean = true,
+    currentScreen: Screen = Screen.HOME,
+    currentDownloadLocation: DownloadPathManager.Companion.DownloadLocation = DownloadPathManager.Companion.DownloadLocation.DOWNLOADS,
+    onDownloadLocationChange: (DownloadPathManager.Companion.DownloadLocation) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    var showDownloadPathDialog by remember { mutableStateOf(false) }
     
-    // 蓝牙连接状态检测 - 如果已连接则自动进入下一阶段
-    LaunchedEffect(isNfcConnected) {
-        if (isNfcConnected) {
+    // 蓝牙连接状态检测 - 只有在 HOME 页面且已连接时才自动进入下一阶段
+    LaunchedEffect(isNfcConnected, currentScreen) {
+        if (isNfcConnected && currentScreen == Screen.HOME) {
             // 蓝牙连接建立后，延迟500ms后自动进入文件选择界面
             delay(500)
             if (isSenderMode) {
@@ -72,12 +87,13 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // 左上角app字样
+            // 顶部栏：左侧app名称，右侧下载目录按钮
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                horizontalArrangement = Arrangement.Start
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = "NFCBeam",
@@ -86,6 +102,17 @@ fun HomeScreen(
                     ),
                     color = MaterialTheme.colorScheme.primary
                 )
+                
+                // 下载目录选择按钮
+                IconButton(
+                    onClick = { showDownloadPathDialog = true }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Folder,
+                        contentDescription = "选择下载目录",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
             
             Column(
@@ -208,7 +235,91 @@ fun HomeScreen(
                 }
             }
         }
+        
+        // 下载路径选择对话框
+        if (showDownloadPathDialog) {
+            DownloadPathSelectionDialog(
+                currentLocation = currentDownloadLocation,
+                onLocationSelected = { location ->
+                    onDownloadLocationChange(location)
+                    showDownloadPathDialog = false
+                },
+                onDismiss = { showDownloadPathDialog = false }
+            )
+        }
     }
+}
+
+@Composable
+fun DownloadPathSelectionDialog(
+    currentLocation: DownloadPathManager.Companion.DownloadLocation,
+    onLocationSelected: (DownloadPathManager.Companion.DownloadLocation) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "选择下载目录",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "接收的文件将保存到所选目录",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+                
+                DownloadPathManager.Companion.DownloadLocation.values().forEach { location ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                            .clickable { onLocationSelected(location) },
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (location == currentLocation) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surface
+                            }
+                        ),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = location == currentLocation,
+                                onClick = { onLocationSelected(location) }
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = location.displayName,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = if (location == currentLocation) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        }
+    )
 }
 
 @Composable
