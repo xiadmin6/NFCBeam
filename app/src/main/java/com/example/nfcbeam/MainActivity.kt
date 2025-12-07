@@ -14,7 +14,6 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.registerForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -22,7 +21,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
@@ -145,6 +143,33 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         }
     }
     
+    // 🆕 自定义下载目录选择器
+    private val customDownloadFolderPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        uri?.let {
+            // 获取持久化权限
+            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+
+            try {
+                contentResolver.takePersistableUriPermission(it, takeFlags)
+                // 设置自定义下载路径
+                downloadPathManager.setCustomDownloadPath(it)
+                currentDownloadLocation = DownloadPathManager.Companion.DownloadLocation.CUSTOM
+                
+                Toast.makeText(
+                    this@MainActivity,
+                    "自定义下载目录已设置: ${downloadPathManager.getCustomPathDisplayName()}",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } catch (e: SecurityException) {
+                Log.e("CustomDownloadFolder", "无法获取持久化权限", e)
+                Toast.makeText(this@MainActivity, "权限授予失败", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    
     // 屏幕状态
     private var currentScreen by mutableStateOf(Screen.HOME)
     private var selectedFiles by mutableStateOf<List<Uri>>(emptyList())
@@ -247,6 +272,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
                         bluetoothDeviceName = bluetoothDeviceName,
                         isNfcConnected = isNfcConnected,
                         currentDownloadLocation = currentDownloadLocation,
+                        customPathDisplayName = downloadPathManager.getCustomPathDisplayName(),
+                        onCustomFolderPicker = { customDownloadFolderPickerLauncher.launch(null) },
                         onDownloadLocationChange = { location ->
                             currentDownloadLocation = location
                             downloadPathManager.setDownloadPath(location)
@@ -457,9 +484,6 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     
     override fun onPause() {
         super.onPause()
-//        if (::nfcAdapter.isInitialized && nfcAdapter != null) {
-//            nfcAdapter.disableForegroundDispatch(this)
-//        }
     }
     
     private fun startTransfer() {
@@ -706,9 +730,10 @@ fun NFCBeamApp(
     bluetoothDeviceName: String,
     isNfcConnected: Boolean,
     currentDownloadLocation: DownloadPathManager.Companion.DownloadLocation,
+    customPathDisplayName: String,
+    onCustomFolderPicker: () -> Unit,
     onDownloadLocationChange: (DownloadPathManager.Companion.DownloadLocation) -> Unit,
-    onScreenChange: (Screen) -> Unit,
-    onFilesSelected: (List<android.net.Uri>) -> Unit,
+    onFilesSelected: (List<Uri>) -> Unit,
     onTransferStart: () -> Unit,
     onBackToHome: () -> Unit,
     onRetryTransfer: () -> Unit,
@@ -719,10 +744,11 @@ fun NFCBeamApp(
     onFilePicker: (Array<String>) -> Unit,
     onFolderPicker: () -> Unit,
     onNfcTouch: () -> Unit,
-    onFileSelectionChange: (List<android.net.Uri>) -> Unit,
+    onFileSelectionChange: (List<Uri>) -> Unit,
     onCancelTransfer: () -> Unit,
     onTransferComplete: (Boolean) -> Unit,
     onToggleMode: () -> Unit,
+    onScreenChange: (Screen) -> Unit,
 ) {
     AnimatedContent(
         targetState = currentScreen,
@@ -746,7 +772,9 @@ fun NFCBeamApp(
                 isNfcConnected = isNfcConnected,
                 isSenderMode = isSenderMode,
                 currentDownloadLocation = currentDownloadLocation,
-                onDownloadLocationChange = onDownloadLocationChange
+                onDownloadLocationChange = onDownloadLocationChange,
+                customPathDisplayName = customPathDisplayName,
+                onCustomFolderPicker = onCustomFolderPicker
             )
             Screen.FILE_SELECT -> FileSelectPage(
                 bluetoothDeviceName = bluetoothDeviceName,
@@ -760,7 +788,7 @@ fun NFCBeamApp(
             )
             Screen.TRANSFER_IN_PROGRESS -> TransferInProgressScreen(
                 transferStatus = transferStatus,
-                onCancel = { 
+                onCancel = {
                     onCancelTransfer()
                     onBackToHome()
                 },
