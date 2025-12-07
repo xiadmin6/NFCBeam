@@ -331,36 +331,36 @@ fun HomeScreen(
                 }
                 
 //                 手动操作按钮（在蓝牙未连接时显示）
-                if (!isNfcConnected) {
-                    // 蓝牙配对按钮 - 用于触发蓝牙OOB配对
-                    ActionButton(
-                        icon = Icons.Default.Bluetooth,
-                        text = "蓝牙配对",
-                        description = if (isSenderMode) "开始蓝牙OOB配对发送" else "开始蓝牙OOB配对接收",
-                        onClick = onBluetoothPairing,
-                        modifier = Modifier.size(32.dp)
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    ActionButton(
-                        icon = Icons.Default.Send,
-                        text = "发送文件",
-                        description = "选择并发送文件",
-                        onClick = onSendFiles,
-                        modifier = Modifier.size(32.dp)
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    ActionButton(
-                        icon = Icons.Default.Wifi,
-                        text = "接收文件",
-                        description = "等待接收文件",
-                        onClick = onReceiveFiles,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
+//                if (!isNfcConnected) {
+//                    // 蓝牙配对按钮 - 用于触发蓝牙OOB配对
+//                    ActionButton(
+//                        icon = Icons.Default.Bluetooth,
+//                        text = "蓝牙配对",
+//                        description = if (isSenderMode) "开始蓝牙OOB配对发送" else "开始蓝牙OOB配对接收",
+//                        onClick = onBluetoothPairing,
+//                        modifier = Modifier.size(32.dp)
+//                    )
+//
+//                    Spacer(modifier = Modifier.height(16.dp))
+//
+//                    ActionButton(
+//                        icon = Icons.Default.Send,
+//                        text = "发送文件",
+//                        description = "选择并发送文件",
+//                        onClick = onSendFiles,
+//                        modifier = Modifier.size(32.dp)
+//                    )
+//
+//                    Spacer(modifier = Modifier.height(16.dp))
+//
+//                    ActionButton(
+//                        icon = Icons.Default.Wifi,
+//                        text = "接收文件",
+//                        description = "等待接收文件",
+//                        onClick = onReceiveFiles,
+//                        modifier = Modifier.size(32.dp)
+//                    )
+//                }
             }
         }
         

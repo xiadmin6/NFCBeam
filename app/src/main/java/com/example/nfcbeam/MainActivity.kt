@@ -194,6 +194,9 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val serviceManager = ServiceConnectionManager(this)
+        serviceManager.startService()
+
         // 初始化管理器
         bluetoothManager = BluetoothManager(this)
         fileTransferManager = FileTransferManager(this, bluetoothManager)
