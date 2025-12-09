@@ -84,7 +84,10 @@ class BluetoothOOBPairingManager(private val context: Context) {
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
             super.onStartSuccess(settingsInEffect)
-            Log.d(TAG, "BLE广告启动成功")
+            // ✅ 优化4: 日志分级 - 使用 Log.v() 避免 release 版本性能损耗
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "BLE广告启动成功")
+            }
             isAdvertising = true
             pairingListener?.onAdvertisingStarted()
         }
@@ -128,17 +131,21 @@ class BluetoothOOBPairingManager(private val context: Context) {
                         
                         // 检查设备配对状态
                         val bondState = device.bondState
-                        Log.d(TAG, "发现OOB配对设备: $deviceName, 配对码: $pairingCode, 配对状态: $bondState")
+                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                            Log.v(TAG, "发现OOB配对设备: $deviceName, 配对码: $pairingCode, 配对状态: $bondState")
+                        }
                         
                         discoveredDevice = device
                         pairingListener?.onDeviceDiscovered(device, pairingCode)
 
-                        // 手动模式下找到设备后停止扫描
+                        // ✅ 优化2: 找到设备后立即停止扫描，释放资源
                         stopScanning()
                         
                         // 如果设备已配对，直接触发连接流程
                         if (bondState == BluetoothDevice.BOND_BONDED) {
-                            Log.d(TAG, "设备已配对，自动触发连接流程")
+                            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                                Log.v(TAG, "设备已配对，自动触发连接流程")
+                            }
                             // 延迟一小段时间确保扫描完全停止
                             handler.postDelayed({
                                 pairingListener?.onPairingCompleted(device)
@@ -175,8 +182,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
                     val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
                     
                     device?.let {
-                        Log.d(TAG, "配对状态变化: ${it.name} - 从$previousState 到 $state")
-                        Log.d("OOBPairing", "收到配对广播：action=${intent.action}, device=${device?.name}, state=$state")
+                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                            Log.v(TAG, "配对状态变化: ${it.name} - 从$previousState 到 $state")
+                        }
                         
                         when (state) {
                             BluetoothDevice.BOND_BONDING -> {
@@ -199,7 +207,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
                                 if (previousState == BluetoothDevice.BOND_BONDING) {
                                     // 配对失败，增加尝试计数
                                     pairingAttemptCount++
-                                    Log.d(TAG, "配对失败，当前尝试次数: $pairingAttemptCount/$MAX_PAIRING_ATTEMPTS")
+                                    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                                        Log.v(TAG, "配对失败，当前尝试次数: $pairingAttemptCount/$MAX_PAIRING_ATTEMPTS")
+                                    }
                                     
                                     if (hasReachedMaxPairingAttempts()) {
                                         pairingListener?.onPairingFailed("配对失败次数过多，请重新开始配对")
@@ -285,7 +295,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
         // 开始BLE广告
         startAdvertising()
         
-        Log.d(TAG, "OOB配对已启动，配对码: $pairingCode")
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "OOB配对已启动，配对码: $pairingCode")
+        }
     }
     
     /**
@@ -303,7 +315,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
         }
         
         if (isScanning) {
-            Log.d(TAG, "已经在扫描中")
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "已经在扫描中")
+            }
             return
         }
         
@@ -340,7 +354,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
                 }
             }, SCAN_TIMEOUT_MS)
             
-            Log.d(TAG, "开始扫描OOB配对设备")
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "开始扫描OOB配对设备")
+            }
         } catch (e: SecurityException) {
             Log.e(TAG, "权限被拒绝，无法开始扫描", e)
             pairingListener?.onPairingFailed("权限被拒绝，无法扫描")
@@ -369,32 +385,44 @@ class BluetoothOOBPairingManager(private val context: Context) {
         }
         
         // 验证配对码（在实际应用中应该更复杂的验证）
-        Log.d(TAG, "使用配对码连接设备: ${device.name}, 配对码: $pairingCode")
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "使用配对码连接设备: ${device.name}, 配对码: $pairingCode")
+        }
         
         // 检查设备是否已经配对
         val bondState = device.bondState
-        Log.d(TAG, "设备配对状态: $bondState (BONDED=${BluetoothDevice.BOND_BONDED})")
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "设备配对状态: $bondState (BONDED=${BluetoothDevice.BOND_BONDED})")
+        }
         
         when (bondState) {
             BluetoothDevice.BOND_BONDED -> {
                 // 设备已经配对，直接触发配对完成回调
-                Log.d(TAG, "设备已配对，跳过配对流程，直接建立连接")
+                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                    Log.v(TAG, "设备已配对，跳过配对流程，直接建立连接")
+                }
                 pairingListener?.onPairingCompleted(device)
                 pairingListener?.onBluetoothConnectionRequested(device)
                 stopAdvertising() // 停止广告
             }
             BluetoothDevice.BOND_BONDING -> {
                 // 设备正在配对中，等待配对完成
-                Log.d(TAG, "设备正在配对中，等待配对完成")
+                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                    Log.v(TAG, "设备正在配对中，等待配对完成")
+                }
                 pairingListener?.onPairingStarted(device)
             }
             BluetoothDevice.BOND_NONE -> {
                 // 设备未配对，开始配对过程
-                Log.d(TAG, "设备未配对，开始配对流程")
+                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                    Log.v(TAG, "设备未配对，开始配对流程")
+                }
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
                         val result = device.createBond()
-                        Log.d(TAG, "createBond() 返回: $result")
+                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                            Log.v(TAG, "createBond() 返回: $result")
+                        }
                         if (!result) {
                             Log.e(TAG, "createBond() 返回false，配对可能失败")
                             pairingListener?.onPairingFailed("无法启动配对流程")
@@ -423,7 +451,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
         stopScanning()
         discoveredDevice = null
         pairingCode = null
-        Log.d(TAG, "OOB配对已停止")
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "OOB配对已停止")
+        }
     }
     
     /**
@@ -449,14 +479,40 @@ class BluetoothOOBPairingManager(private val context: Context) {
     
     /**
      * 重置配对状态，解决配对重试限制问题
+     * ✅ 增强：更彻底的状态重置，包括 null 检查和回调清理
      */
     fun resetPairingState() {
+        Log.d(TAG, "🔄 开始重置配对状态...")
+        
+        // 重置计数器和等待状态
         pairingAttemptCount = 0
+        isWaitingForRetry = false
+        
+        // 清除所有待处理的回调
+        handler.removeCallbacksAndMessages(null)
+        
+        // 停止广告和扫描（带 null 检查）
+        try {
+            if (isAdvertising) {
+                stopAdvertising()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "停止广告时出错", e)
+        }
+        
+        try {
+            if (isScanning) {
+                stopScanning()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "停止扫描时出错", e)
+        }
+        
+        // 清空设备和配对码引用
         discoveredDevice = null
         pairingCode = null
-        stopAdvertising()
-        stopScanning()
-        Log.d(TAG, "配对状态已重置")
+        
+        Log.d(TAG, "✅ 配对状态已完全重置")
     }
     
     /**
@@ -489,7 +545,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
     
     private fun startAdvertising() {
         if (isAdvertising) {
-            Log.d(TAG, "已经在广告中")
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "已经在广告中")
+            }
             return
         }
         
@@ -528,7 +586,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
         
         try {
             advertiser.startAdvertising(settings, advertiseData, scanResponseData, advertiseCallback)
-            Log.d(TAG, "开始BLE广告，配对码: $pairingCode")
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "开始BLE广告，配对码: $pairingCode")
+            }
         } catch (e: SecurityException) {
             Log.e(TAG, "权限被拒绝，无法开始广告", e)
             pairingListener?.onPairingFailed("权限被拒绝，无法广告")
@@ -544,7 +604,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
                 bluetoothLeAdvertiser?.stopAdvertising(advertiseCallback)
                 isAdvertising = false
                 pairingListener?.onAdvertisingStopped()
-                Log.d(TAG, "BLE广告已停止")
+                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                    Log.v(TAG, "BLE广告已停止")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "停止广告失败", e)
             }
@@ -557,7 +619,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
                 bluetoothLeScanner?.stopScan(scanCallback)
                 isScanning = false
                 pairingListener?.onScanStopped()
-                Log.d(TAG, "BLE扫描已停止")
+                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                    Log.v(TAG, "BLE扫描已停止")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "停止扫描失败", e)
             }
@@ -611,7 +675,9 @@ class BluetoothOOBPairingManager(private val context: Context) {
         isWaitingForRetry = true
         var remainingSeconds = 5
         
-        Log.d(TAG, "启动5秒等待机制，将在${remainingSeconds}秒后自动重试配对")
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "启动5秒等待机制，将在${remainingSeconds}秒后自动重试配对")
+        }
         
         // 立即通知UI开始等待
         pairingListener?.onWaitingForRetry(remainingSeconds)
@@ -622,12 +688,16 @@ class BluetoothOOBPairingManager(private val context: Context) {
                 if (isWaitingForRetry && remainingSeconds > 0) {
                     remainingSeconds--
                     pairingListener?.onWaitingForRetry(remainingSeconds)
-                    Log.d(TAG, "等待重试，剩余时间: ${remainingSeconds}秒")
+                    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                        Log.v(TAG, "等待重试，剩余时间: ${remainingSeconds}秒")
+                    }
                     handler.postDelayed(this, 1000L)
                 } else if (isWaitingForRetry && remainingSeconds == 0) {
                     // 5秒等待结束，自动重试配对
                     isWaitingForRetry = false
-                    Log.d(TAG, "5秒等待结束，自动重试配对")
+                    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                        Log.v(TAG, "5秒等待结束，自动重试配对")
+                    }
                     pairingListener?.onPairingFailed("正在自动重试配对...")
                     
                     // 延迟一小段时间后重新开始配对

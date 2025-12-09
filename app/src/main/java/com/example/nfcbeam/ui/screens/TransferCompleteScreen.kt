@@ -150,19 +150,16 @@ fun TransferCompleteScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     
-                    // 显示文件列表（最多显示5个）
-                    transferredFileInfos.take(5).forEach { fileInfo ->
-                        FileInfoItem(fileInfo = fileInfo)
-                        Spacer(modifier = Modifier.height(4.dp))
-                    }
-                    
-                    if (transferredFileInfos.size > 5) {
-                        Text(
-                            text = "... 还有 ${transferredFileInfos.size - 5} 个文件",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 8.dp, top = 4.dp)
-                        )
+                    // 使用 LazyColumn 显示文件列表，限制高度为3行
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 120.dp) // 限制最大高度约为3行（每行约40dp）
+                    ) {
+                        items(transferredFileInfos) { fileInfo ->
+                            FileInfoItem(fileInfo = fileInfo)
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
                     }
                 } else if (transferredFiles.isNotEmpty()) {
                     // 兼容旧版本：如果没有详细信息，只显示文件名
@@ -173,21 +170,21 @@ fun TransferCompleteScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    transferredFiles.take(3).forEach { fileName ->
-                        Text(
-                            text = "• $fileName",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
-                    }
-                    if (transferredFiles.size > 3) {
-                        Text(
-                            text = "... 还有 ${transferredFiles.size - 3} 个文件",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
+                    
+                    // 使用 LazyColumn 显示文件列表，限制高度为3行
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 84.dp) // 限制最大高度约为3行（每行约28dp）
+                    ) {
+                        items(transferredFiles) { fileName ->
+                            Text(
+                                text = "• $fileName",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
+                            )
+                        }
                     }
                 }
             }

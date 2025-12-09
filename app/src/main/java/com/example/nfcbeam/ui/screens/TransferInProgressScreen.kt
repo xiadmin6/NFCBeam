@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Cancel
@@ -31,14 +33,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.nfcbeam.FileTransferManager
 import com.example.nfcbeam.ui.theme.NFCBeamTheme
+import androidx.compose.runtime.*
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material3.Divider
 
 @Composable
 fun TransferInProgressScreen(
     transferStatus: FileTransferManager.TransferStatus,
+    fileNames: List<String> = emptyList(),
     onCancel: () -> Unit,
     onTransferComplete: (Boolean) -> Unit,
     modifier: Modifier = Modifier
@@ -123,7 +133,7 @@ fun TransferInProgressScreen(
                         fontWeight = FontWeight.Medium,
                         modifier = Modifier.padding(bottom = 12.dp)
                     )
-                    
+
                     TransferDetailItem(
                         label = "状态",
                         value = when {
@@ -134,25 +144,32 @@ fun TransferInProgressScreen(
                             else -> "等待"
                         }
                     )
-                    
+
                     if (transferStatus.isTransferring || transferStatus.isCompleted) {
                         TransferDetailItem(
                             label = "进度",
                             value = "${(transferStatus.progress * 100).toInt()}%"
                         )
-                        
-                        TransferDetailItem(
-                            label = "当前文件",
-                            value = transferStatus.currentFileName ?: "未知"
-                        )
-                        
+
                         TransferDetailItem(
                             label = "已传输",
                             value = "${transferStatus.transferredFiles}/${transferStatus.totalFiles}"
                         )
                     }
-                    
+
+                    // ✅ 新增：文件列表区域（只在有文件且正在传输或完成时显示）
+                    if (fileNames.isNotEmpty() &&
+                        (transferStatus.isTransferring || transferStatus.isCompleted)) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        FileListSection(
+                            fileNames = fileNames,
+                            transferredFiles = transferStatus.transferredFiles,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
                     if (transferStatus.errorMessage != null) {
+                        Spacer(modifier = Modifier.height(12.dp))
                         TransferDetailItem(
                             label = "错误信息",
                             value = transferStatus.errorMessage!!
@@ -333,6 +350,185 @@ fun TransferInProgressScreenPreview() {
     }
 }
 
+@Composable
+private fun FileListSection(
+    fileNames: List<String>,
+    transferredFiles: Int,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier) {
+        Text(
+            text = "文件列表",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+
+        if (fileNames.isEmpty()) {
+            Text(
+                text = "暂无文件",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            // 显示前3个文件，其余在可滑动列表中
+            val maxVisible = 3
+            val visibleFiles = fileNames.take(maxVisible)
+            val remainingFiles = fileNames.drop(maxVisible)
+
+            // 显示前3个文件
+            visibleFiles.forEachIndexed { index, fileName ->
+                FileItem(
+                    fileName = fileName,
+                    isTransferred = index < transferredFiles,
+                    isCurrent = index == transferredFiles,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+            }
+
+            // 如果有剩余文件，显示在可滑动的列表中
+            if (remainingFiles.isNotEmpty()) {
+                ExpandableFileList(
+                    remainingFiles = remainingFiles,
+                    transferredFiles = transferredFiles - maxVisible, // 调整索引
+                    totalTransferredFiles = transferredFiles,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * ✅ 新增：可展开的文件列表
+ */
+@Composable
+private fun ExpandableFileList(
+    remainingFiles: List<String>,
+    transferredFiles: Int,
+    totalTransferredFiles: Int,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Column(modifier = modifier) {
+        // 展开/收起按钮
+        Button(
+            onClick = { expanded = !expanded },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Text(
+                text = if (expanded) "收起剩余文件" else "查看更多文件 (${remainingFiles.size}个)",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+
+        // 展开的文件列表
+        if (expanded) {
+            LazyColumn(
+                modifier = Modifier
+                    .heightIn(max = 200.dp) // 限制最大高度
+                    .padding(top = 8.dp)
+            ) {
+                itemsIndexed(remainingFiles) { index, fileName ->
+                    // 计算实际索引（因为这是剩余文件列表）
+                    val actualIndex = index + (remainingFiles.size - remainingFiles.size)
+
+                    FileItem(
+                        fileName = fileName,
+                        isTransferred = actualIndex < transferredFiles,
+                        isCurrent = actualIndex == transferredFiles,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    )
+
+                    if (index < remainingFiles.lastIndex) {
+                        Divider(
+                            modifier = Modifier.padding(vertical = 4.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * ✅ 新增：单个文件项
+ */
+@Composable
+private fun FileItem(
+    fileName: String,
+    isTransferred: Boolean,
+    isCurrent: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 状态图标
+        when {
+            isTransferred -> {
+                Icon(
+                    imageVector = Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+            isCurrent -> {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp
+                )
+            }
+            else -> {
+                Box(
+                    modifier = Modifier.size(20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // 空占位符
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        // 文件名
+        Text(
+            text = fileName,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+
+        // 如果是当前传输的文件，显示进度指示器
+        if (isCurrent) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = "传输中",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+fun Box(modifier: Modifier, contentAlignment: Alignment, content: @Composable () -> Unit) {
+    TODO("Not yet implemented")
+}
+
+
 @Preview(showBackground = true)
 @Composable
 fun TransferInProgressScreenTransferringPreview() {
@@ -347,10 +543,20 @@ fun TransferInProgressScreenTransferringPreview() {
                     isTransferring = true,
                     isCompleted = false,
                     progress = 0.65f,
-                    totalFiles = 3,
-                    transferredFiles = 1,
-                    currentFileName = "photo.jpg",
+                    totalFiles = 8,
+                    transferredFiles = 3,
+                    currentFileName = "document.pdf",
                     errorMessage = null
+                ),
+                fileNames = listOf( // ✅ 新增：演示文件列表
+                    "photo1.jpg",
+                    "photo2.jpg",
+                    "photo3.jpg",
+                    "video.mp4",
+                    "document.pdf",
+                    "presentation.pptx",
+                    "archive.zip",
+                    "notes.txt"
                 ),
                 onCancel = {},
                 onTransferComplete = {}

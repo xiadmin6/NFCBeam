@@ -17,6 +17,7 @@ import android.provider.OpenableColumns
 import android.util.Log
 import android.widget.Toast
 import java.io.*
+import java.net.SocketException
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.*
@@ -29,6 +30,12 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
     
     // 下载路径管理器
     private val downloadPathManager = DownloadPathManager(context)
+
+    private val receivedFilesThisSession = Collections.synchronizedList<Uri>(mutableListOf())
+
+    private var isReceiverMode = false
+
+    private val receivedFileUris = mutableListOf<Uri>()
     
     // WakeLock 用于后台保活
     private var wakeLock: PowerManager.WakeLock? = null
@@ -36,12 +43,13 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
     companion object {
         private const val TAG = "FileTransferManager"
         private const val BUFFER_SIZE = 8192
-        private const val CHUNK_SIZE = 1024 * 1024 // ✅ 新增：1MB 分片大小
-        private const val PROTOCOL_VERSION = 2 // ✅ 升级协议版本支持分片
+        private const val CHUNK_SIZE = 1024 * 1024
+        private const val PROTOCOL_VERSION = 2
         private const val MAX_RETRY_COUNT = 3
         private const val RETRY_DELAY_MS = 100L
         private const val SOCKET_TIMEOUT_MS = 60000 // 增加到60秒
         private const val LARGE_FILE_THRESHOLD = 50 * 1024 * 1024L // 50MB
+        private const val DISCONNECT_DELAY_MS = 2000L // ✅ 新增：延迟断开时间（2秒）
         
         // 协议命令
         private const val CMD_START_TRANSFER = 0x01
@@ -56,6 +64,15 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
         private const val CMD_CHUNK_DATA = 0x09
         private const val CMD_CHUNK_END = 0x0A
     }
+    
+    // ✅ 修复：将 hasSuccessfullyCompleted 改为实例变量，避免状态污染
+    private var hasSuccessfullyCompleted = false
+    
+    // ✅ 新增：文件完整性验证相关变量
+    private var expectedTotalFiles = 0
+    private var expectedTotalSize = 0L
+    private var actualReceivedFiles = 0
+    private var actualReceivedSize = 0L
     
     // ✅ 动态线程池配置
     private val cpuCount = Runtime.getRuntime().availableProcessors()
@@ -343,7 +360,7 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
     }
     
     fun startFileTransfer(fileUris: List<Uri>) {
-        // ✅ 使用原子操作检查和设置传输状态
+        isReceiverMode = false
         if (!isTransferringAtomic.compareAndSet(false, true)) {
             Toast.makeText(context, "传输正在进行中", Toast.LENGTH_SHORT).show()
             return
@@ -638,6 +655,10 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
                 // 发送传输完成命令
                 sendTransferCompleteCommand()
                 
+                // ✅ 新增：延迟断开，确保接收端完成清理
+                Log.d(TAG, "⏳ 等待 ${DISCONNECT_DELAY_MS}ms 确保接收端完成清理...")
+                Thread.sleep(DISCONNECT_DELAY_MS)
+                
                 // 根据是否有错误设置最终状态
                 if (hasErrors) {
                     val errorMsg = "部分文件传输失败 (${failedFiles.size}/${pendingFiles.size}): ${failedFiles.joinToString(", ")}"
@@ -674,8 +695,12 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
         } finally {
             isTransferring = false
             isTransferringAtomic.set(false)
+
+            // ⏳ 关键：延迟关闭，给接收端时间退出 read 循环
+            try { Thread.sleep(DISCONNECT_DELAY_MS) } catch (_: InterruptedException) { }
+
             releaseWakeLock()
-            Log.d(TAG, "🏁 [传输线程] 传输流程结束")
+            Log.d(TAG, "🏁 [传输线程] 传输流程结束，socket 即将关闭")
         }
     }
     
@@ -1038,9 +1063,16 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
                 val bytesRead = inputStream.read(buffer, offset + totalRead, remaining)
                 
                 if (bytesRead == -1) {
-                    // 连接已断开
-                    Log.e(TAG, "连接已断开，已读取 $totalRead/$length 字节")
-                    return -1
+                    // ✅ 修复：区分正常EOF和异常断开
+                    if (totalRead == 0) {
+                        // 如果一开始就读到EOF，可能是正常的流结束
+                        Log.d(TAG, "⚠️ 读取到EOF（可能是正常流结束）")
+                        return -1
+                    } else {
+                        // 读取过程中遇到EOF，这是异常情况
+                        Log.e(TAG, "❌ 连接异常断开，已读取 $totalRead/$length 字节")
+                        return -1
+                    }
                 } else if (bytesRead == 0) {
                     // 没有数据可读，稍等后重试
                     retryCount++
@@ -1128,8 +1160,10 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
         }
         
         isTransferring = true
-        
-        // 获取 WakeLock
+        isReceiverMode = true
+        hasSuccessfullyCompleted = false
+        receivedFilesThisSession.clear()
+        receivedFileUris.clear()
         acquireWakeLock()
         
         Log.d(TAG, "启动文件接收器")
@@ -1195,13 +1229,33 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
             
             // 用于接收文件数据的状态
             var receivingFileData = false
-            var fileOutputStream: FileOutputStream? = null
+            var fileOutputStream: OutputStream? = null
             var totalBytesReceived = 0L
+            var currentFileOutput: FileOutput? = null
             
             while (isTransferring) {
                 val commandByte = inputStream?.read()
-                if (commandByte == null || commandByte == -1) {
-                    Log.e(TAG, "读取命令失败，连接可能已断开")
+                if (commandByte == -1) {
+                    when {
+                        hasSuccessfullyCompleted -> {
+                            Log.d(TAG, "✅ 传输已完成，正常退出接收循环（EOF）")
+                        }
+                        // 完整性兜底：虽然没有收到 CMD_TRANSFER_COMPLETE，但数据全了
+                        totalReceivedSize >= expectedTotalSize &&
+                                actualReceivedFiles == expectedTotalFiles -> {
+                            Log.w(TAG, "⚠️ 未收到完成命令，但文件完整性验证通过，视为成功")
+                            hasSuccessfullyCompleted = true
+                            mainHandler.post {
+                                transferListener?.onTransferCompleted(receivedFileInfoList, totalReceivedSize)
+                            }
+                        }
+                        else -> {
+                            Log.e(TAG, "❌ 连接异常断开（EOF）且完整性校验失败")
+                            mainHandler.post {
+                                transferListener?.onTransferError("连接异常断开")
+                            }
+                        }
+                    }
                     break
                 }
                 val command = commandByte
@@ -1217,6 +1271,11 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
                         totalFiles = (fileCountBytes[0].toInt() and 0xFF shl 16) or
                                    (fileCountBytes[1].toInt() and 0xFF shl 8) or
                                    (fileCountBytes[2].toInt() and 0xFF)
+                        
+                        // ✅ 新增：记录预期值用于完整性验证
+                        expectedTotalFiles = totalFiles
+                        actualReceivedFiles = 0
+                        actualReceivedSize = 0L
                         
                         Log.d(TAG, "开始接收传输: 版本=$version, 文件数=$totalFiles")
                         mainHandler.post {
@@ -1288,15 +1347,15 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
                         mainHandler.post {
                             transferListener?.onFileTransferStarted(fileInfo, currentFileIndex, totalFiles)
                         }
-                        
-                        // 准备接收文件数据 - 使用MediaStore API或直接文件系统
-                        val file = saveFileUsingMediaStoreOrFileSystem(currentFileName!!, currentFileType!!)
-                        fileOutputStream = FileOutputStream(file)
+
+                        // ✅ 准备接收文件数据 - 直接获取输出流
+                        currentFileOutput = saveFileUsingMediaStoreOrFileSystem(currentFileName!!, currentFileType!!)
+                        fileOutputStream = currentFileOutput?.outputStream
                         totalBytesReceived = 0L
                         receivingFileData = true
-                        
-                        Log.d(TAG, "准备接收文件数据到: ${file.absolutePath}")
-                        
+
+                        Log.d(TAG, "准备接收文件数据到: ${currentFileOutput?.displayPath}")
+
                         // 发送ACK确认文件信息已接收
                         sendAck()
                     }
@@ -1357,8 +1416,14 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
                         if (totalBytesReceived >= currentFileSize) {
                             fileOutputStream?.flush()
                             fileOutputStream?.close()
+                            
+                            // ✅ 执行关闭后的清理操作（如果有）
+                            currentFileOutput?.closeAction?.invoke()
+                            
                             fileOutputStream = null
+                            currentFileOutput = null
                             receivingFileData = false
+                            
                             receivedFiles.add(currentFileName!!)
                             
                             // 记录接收到的文件信息
@@ -1366,30 +1431,46 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
                             receivedFileInfoList.add(fileInfo)
                             totalReceivedSize += currentFileSize
                             
-                            val receivedFile = File(getReceivedFilesDirectory(), currentFileName!!)
+                            // ✅ 新增：更新实际接收统计
+                            actualReceivedFiles++
+                            actualReceivedSize += currentFileSize
+                            
                             Log.d(TAG, "✅ 文件接收完成: $currentFileName")
                             Log.d(TAG, "   - 预期大小: $currentFileSize 字节")
                             Log.d(TAG, "   - 实际接收: $totalBytesReceived 字节")
-                            Log.d(TAG, "   - 文件路径: ${receivedFile.absolutePath}")
-                            Log.d(TAG, "   - 文件存在: ${receivedFile.exists()}")
-                            Log.d(TAG, "   - 文件大小: ${receivedFile.length()} 字节")
                             
                             // 发送ACK确认文件数据已完全接收
                             sendAck()
                         }
                     }
-                    
+
                     CMD_TRANSFER_COMPLETE -> {
                         Log.d(TAG, "收到传输完成命令，已接收 ${receivedFiles.size} 个文件")
-                        
-                        // 关闭可能还打开的文件流
                         fileOutputStream?.close()
                         fileOutputStream = null
+
+                        // ✅ 新增：文件完整性验证
+                        val isIntegrityValid = verifyTransferIntegrity(
+                            expectedTotalFiles,
+                            actualReceivedFiles,
+                            actualReceivedSize
+                        )
                         
-                        setStatus(TransferStatus(isCompleted = true, isSuccess = true))
-                        mainHandler.post {
-                            transferListener?.onTransferCompleted(receivedFileInfoList.toList(), totalReceivedSize)
-                            Toast.makeText(context, "文件接收完成，共 ${receivedFiles.size} 个文件", Toast.LENGTH_LONG).show()
+                        if (isIntegrityValid) {
+                            Log.d(TAG, "✅ 文件完整性验证通过")
+                            setStatus(TransferStatus(isCompleted = true, isSuccess = true))
+                            mainHandler.post {
+                                transferListener?.onTransferCompleted(receivedFileInfoList.toList(), totalReceivedSize)
+                                Toast.makeText(context, "文件接收完成，共 ${receivedFiles.size} 个文件", Toast.LENGTH_LONG).show()
+                            }
+                            hasSuccessfullyCompleted = true // 👈 标记成功完成
+                        } else {
+                            Log.e(TAG, "❌ 文件完整性验证失败")
+                            setStatus(TransferStatus(isCompleted = true, isSuccess = false, errorMessage = "文件完整性验证失败"))
+                            mainHandler.post {
+                                transferListener?.onTransferError("文件完整性验证失败")
+                                Toast.makeText(context, "文件接收失败：完整性验证失败", Toast.LENGTH_LONG).show()
+                            }
                         }
                         break
                     }
@@ -1438,41 +1519,106 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
                     }
                 }
             }
-            
+
         } catch (e: Exception) {
-            Log.e(TAG, "接收文件失败", e)
-            setStatus(TransferStatus(isCompleted = true, isSuccess = false, errorMessage = e.message ?: "接收失败"))
-            mainHandler.post {
-                transferListener?.onTransferError(e.message ?: "接收失败")
-                Toast.makeText(context, "接收文件失败: ${e.message}", Toast.LENGTH_LONG).show()
+            // ✅ 修复：细化异常处理，区分可忽略的清理异常和真实错误
+            val isCleanupException = isCleanupException(e)
+
+            Log.d(TAG, "捕获异常: ${e.javaClass.simpleName} - ${e.message}")
+            Log.d(TAG, "isCleanupException: $isCleanupException, hasSuccessfullyCompleted: $hasSuccessfullyCompleted")
+
+            if (isCleanupException && hasSuccessfullyCompleted) {
+                // 传输已成功完成，这是清理阶段的异常，可以忽略
+                Log.w(TAG, "⚠️ 忽略清理阶段的异常: ${e.javaClass.simpleName} - ${e.message}")
+            } else if (!hasSuccessfullyCompleted) {
+                // 传输未完成就出现异常，这是真实错误
+                Log.e(TAG, "❌ 接收文件失败", e)
+
+                // ✅ 传输失败，清理已接收的文件
+                if (receivedFilesThisSession.isNotEmpty()) {
+                    Log.d(TAG, "📦 传输失败，开始清理已接收的文件...")
+                    cleanupReceivedFilesImmediately()
+                }
+
+                setStatus(TransferStatus(isCompleted = true, isSuccess = false, errorMessage = e.message ?: "接收失败"))
+                mainHandler.post {
+                    transferListener?.onTransferError(e.message ?: "接收失败")
+                    Toast.makeText(context, "接收文件失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            } else {
+                // 传输已完成但出现非清理异常，记录警告
+                Log.w(TAG, "⚠️ 传输完成后出现异常: ${e.javaClass.simpleName} - ${e.message}")
             }
-        } finally {
-            isTransferring = false
-            releaseWakeLock() // 释放 WakeLock
-            // 注意：这里不关闭流，保持Socket连接可用
-            // 只有在用户明确退出或需要断开连接时才关闭
         }
     }
-    
-    
-    fun cancelTransfer() {
-        isTransferring = false
-        setStatus(TransferStatus(isCompleted = true, isSuccess = false, errorMessage = "传输已取消"))
-        
-        // 发送取消命令
-        outputStream?.let { os ->
-            val data = ByteArray(1)
-            data[0] = CMD_CANCEL_TRANSFER.toByte()
-            os.write(data)
-            os.flush()
+
+    private fun deleteReceivedFiles() {
+        if (receivedFileUris.isEmpty()) return
+
+        fileProcessExecutor.execute {
+            Log.d(TAG, "🗑️ 开始删除 ${receivedFileUris.size} 个已接收的文件...")
+            for (uri in receivedFileUris) {
+                try {
+                    val deleted = context.contentResolver.delete(uri, null, null)
+                    if (deleted == 1) {
+                        Log.d(TAG, "✅ 已删除: $uri")
+                    } else {
+                        Log.w(TAG, "⚠️ 未删除（可能已不存在）: $uri")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "❌ 删除失败: $uri", e)
+                }
+            }
+            receivedFileUris.clear()
+            Log.d(TAG, "🧹 已接收文件清理完成")
         }
-        
+    }
+
+
+    fun cancelTransfer() {
+        Log.d(TAG, "🛑 取消传输...")
+
+        isTransferring = false
+        isTransferringAtomic.set(false)
+        stopProgressUpdates()
+
+        // 取消当前传输任务
+        currentTransferTask?.cancel(true)
+        currentTransferTask = null
+
+        // ✅ 修复：立即同步删除文件，不要用异步线程
+        cleanupReceivedFilesImmediately()
+
+        // 尝试发送取消命令（可能失败，因为连接可能已断开）
+        try {
+            outputStream?.let { os ->
+                val data = ByteArray(1)
+                data[0] = CMD_CANCEL_TRANSFER.toByte()
+                os.write(data)
+                os.flush()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "发送取消命令失败（连接可能已断开）", e)
+        }
+
+        // 清理流
+        cleanupStreams()
+        releaseWakeLock()
+
+        // ✅ 重要：最后才断开蓝牙连接
+        // 给接收端足够时间处理取消命令
+        Thread.sleep(500)  // 等待500ms
+
+        // 断开蓝牙连接，确保下次可以重新连接
+        bluetoothManager.disconnect()
+
+        // 通知监听器
         mainHandler.post {
             transferListener?.onTransferCancelled()
             Toast.makeText(context, "传输已取消", Toast.LENGTH_SHORT).show()
         }
-        
-        cleanupStreams()
+
+        Log.d(TAG, "✅ 传输取消完成，资源已清理")
     }
     
     fun getTransferStatus(): TransferStatus {
@@ -1489,50 +1635,146 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
     }
     
     private fun cleanupStreams() {
+        // ✅ 优化5: 正确清理流资源
         try {
-            inputStream?.close()
-            outputStream?.close()
-        } catch (e: IOException) {
-            Log.e(TAG, "关闭流失败", e)
+            inputStream?.let { stream ->
+                try {
+                    stream.close()
+                    Log.d(TAG, "输入流已关闭")
+                } catch (e: IOException) {
+                    Log.w(TAG, "关闭输入流失败", e)
+                }
+            }
+        } finally {
+            inputStream = null
         }
-        inputStream = null
-        outputStream = null
+        
+        try {
+            outputStream?.let { stream ->
+                try {
+                    stream.flush() // 先刷新缓冲区
+                    stream.close()
+                    Log.d(TAG, "输出流已关闭")
+                } catch (e: IOException) {
+                    Log.w(TAG, "关闭输出流失败", e)
+                }
+            }
+        } finally {
+            outputStream = null
+        }
     }
     
     /**
-     * 使用MediaStore API或文件系统保存文件
-     * Android 10+ 优先使用MediaStore API保存到公共目录
-     * Android 10以下使用传统文件系统
+     * ✅ 文件输出包装类，支持直接写入自定义目录
      */
-    private fun saveFileUsingMediaStoreOrFileSystem(fileName: String, mimeType: String): File {
+    private data class FileOutput(
+        val outputStream: OutputStream,
+        val displayPath: String,
+        val uri: Uri? = null,
+        val closeAction: (() -> Unit)? = null
+    )
+
+
+    private fun saveFileUsingMediaStoreOrFileSystem(fileName: String, mimeType: String): FileOutput {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 10+ 使用MediaStore API
-            saveFileUsingMediaStore(fileName, mimeType)
+            val output = saveFileUsingMediaStore(fileName, mimeType)
+            if (output.uri != null) {
+                receivedFilesThisSession.add(output.uri)
+                Log.d(TAG, "✅ 添加文件到删除列表: ${output.uri}")
+            } else {
+                Log.w(TAG, "⚠️ 文件没有 URI，无法添加到删除列表: $fileName")
+            }
+            output
         } else {
-            // Android 10以下使用传统方式
-            saveFileToDownloadDirectory(fileName)
+            val file = saveFileToDownloadDirectory(fileName)
+            val uri = Uri.fromFile(file)
+            receivedFilesThisSession.add(uri)
+            Log.d(TAG, "✅ 添加文件到删除列表 (Android 10以下): $uri")
+            FileOutput(FileOutputStream(file), file.absolutePath, uri)
         }
     }
     
-    /**
-     * Android 10+ 使用MediaStore API保存文件
-     */
-    private fun saveFileUsingMediaStore(fileName: String, mimeType: String): File {
+
+    private fun saveFileUsingMediaStore(fileName: String, mimeType: String): FileOutput {
         try {
-            // 获取配置的下载路径
+            val currentLocation = downloadPathManager.getCurrentLocation()
+            
+            // ✅ 检查是否为自定义路径
+            if (currentLocation == DownloadPathManager.Companion.DownloadLocation.CUSTOM) {
+                val customUri = downloadPathManager.getCustomDownloadPath()
+                if (customUri != null) {
+                    // ✅ 直接在自定义目录中创建文件并返回输出流
+                    return createFileInCustomDirectory(customUri, fileName, mimeType)
+                } else {
+                    Log.w(TAG, "自定义路径未设置，回退到默认下载目录")
+                }
+            }
+            
+            // 获取配置的下载路径（非自定义路径）
             val downloadDir = downloadPathManager.ensureDownloadDirectoryExists()
             
-            // 创建临时文件用于接收数据
-            val tempFile = File(downloadDir, fileName)
+            // 创建文件用于接收数据
+            val file = File(downloadDir, fileName)
             
             // 确保父目录存在
-            tempFile.parentFile?.mkdirs()
+            file.parentFile?.mkdirs()
             
-            Log.d(TAG, "使用MediaStore保存文件到: ${tempFile.absolutePath}")
-            return tempFile
+            Log.d(TAG, "使用MediaStore保存文件到: ${file.absolutePath}")
+            return FileOutput(
+                outputStream = FileOutputStream(file),
+                displayPath = file.absolutePath,
+                uri = Uri.fromFile(file)
+            )
         } catch (e: Exception) {
             Log.e(TAG, "使用MediaStore保存文件失败，回退到应用私有目录", e)
-            return saveFileToAppPrivateDirectory(fileName)
+            val file = saveFileToAppPrivateDirectory(fileName)
+            return FileOutput(
+                outputStream = FileOutputStream(file),
+                displayPath = file.absolutePath,
+                uri = Uri.fromFile(file)
+            )
+        }
+    }
+    
+    /**
+     * ✅ 新增：直接在自定义目录中创建文件并返回输出流
+     */
+    private fun createFileInCustomDirectory(treeUri: Uri, fileName: String, mimeType: String): FileOutput {
+        try {
+            // 验证自定义目录是否可访问
+            val documentFile = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, treeUri)
+            if (documentFile == null || !documentFile.exists()) {
+                Log.e(TAG, "自定义目录不存在或无法访问")
+                throw IOException("自定义目录不存在")
+            }
+
+            // 检查文件是否已存在，如果存在则删除
+            val existingFile = documentFile.findFile(fileName)
+            if (existingFile != null && existingFile.exists()) {
+                Log.d(TAG, "文件已存在，删除旧文件: $fileName")
+                existingFile.delete()
+            }
+
+            // 在自定义目录中创建新文件
+            val newFile = documentFile.createFile(mimeType, fileName)
+            if (newFile == null) {
+                throw IOException("无法在自定义目录中创建文件")
+            }
+
+            // 使用 ContentResolver 打开输出流
+            val outputStream = context.contentResolver.openOutputStream(newFile.uri)
+                ?: throw IOException("无法打开输出流")
+
+            Log.d(TAG, "✅ 直接在自定义目录中创建文件: ${newFile.uri}")
+
+            return FileOutput(
+                outputStream = outputStream,
+                displayPath = "自定义目录/$fileName",
+                uri = newFile.uri  // ✅ 修复：设置 URI
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "在自定义目录中创建文件失败", e)
+            throw e
         }
     }
     
@@ -1562,6 +1804,12 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
         Log.d(TAG, "保存文件到应用私有目录: ${file.absolutePath}")
         return file
     }
+
+    fun clearReceiveState() {
+        receivedFilesThisSession.clear()
+        isReceiverMode = false
+        Log.d(TAG, "✅ 接收状态已清理")
+    }
     
     /**
      * 获取接收文件目录（保持向后兼容）
@@ -1575,5 +1823,131 @@ class FileTransferManager(private val context: Context, private val bluetoothMan
      */
     fun getDownloadPathManager(): DownloadPathManager {
         return downloadPathManager
+    }
+    
+    /**
+     * ✅ 新增：验证传输完整性
+     */
+    private fun verifyTransferIntegrity(
+        expectedFiles: Int,
+        actualFiles: Int,
+        actualSize: Long
+    ): Boolean {
+        Log.d(TAG, "📊 完整性验证:")
+        Log.d(TAG, "   预期文件数: $expectedFiles")
+        Log.d(TAG, "   实际文件数: $actualFiles")
+        Log.d(TAG, "   实际大小: ${actualSize / 1024 / 1024}MB")
+        
+        // 验证文件数量
+        if (expectedFiles != actualFiles) {
+            Log.e(TAG, "❌ 文件数量不匹配: 预期=$expectedFiles, 实际=$actualFiles")
+            return false
+        }
+        
+        // 验证文件大小（至少要有数据）
+        if (actualSize == 0L && expectedFiles > 0) {
+            Log.e(TAG, "❌ 文件大小为0但预期有文件")
+            return false
+        }
+        
+        Log.d(TAG, "✅ 完整性验证通过")
+        return true
+    }
+
+    private fun cleanupReceivedFilesImmediately() {
+        if (receivedFilesThisSession.isEmpty()) {
+            Log.d(TAG, "📭 没有需要清理的文件")
+            return
+        }
+
+        Log.d(TAG, "🗑️ 立即同步清理 ${receivedFilesThisSession.size} 个文件...")
+        val filesToDelete = ArrayList<Uri>(receivedFilesThisSession)
+        receivedFilesThisSession.clear()
+
+        var successCount = 0
+        for (uri in filesToDelete) {
+            try {
+                Log.d(TAG, "正在删除: $uri")
+                when {
+                    // 1. DocumentsContract URI (SAF)
+                    DocumentsContract.isDocumentUri(context, uri) -> {
+                        if (DocumentsContract.deleteDocument(context.contentResolver, uri)) {
+                            successCount++
+                            Log.d(TAG, "✅ 已删除 DocumentsContract URI: $uri")
+                        } else {
+                            Log.w(TAG, "⚠️ 删除 DocumentsContract URI 失败: $uri")
+                        }
+                    }
+
+                    // 2. File URI (file://)
+                    uri.scheme == "file" -> {
+                        val file = File(uri.path ?: continue)
+                        if (file.exists()) {
+                            if (file.delete()) {
+                                successCount++
+                                Log.d(TAG, "✅ 已删除文件: ${file.absolutePath}")
+                            } else {
+                                Log.w(TAG, "⚠️ 删除文件失败: ${file.absolutePath}")
+                            }
+                        } else {
+                            Log.w(TAG, "⚠️ 文件不存在: ${file.absolutePath}")
+                        }
+                    }
+
+                    // 3. Content URI (content://) - 用于 MediaStore
+                    uri.scheme == "content" -> {
+                        try {
+                            val deleted = context.contentResolver.delete(uri, null, null)
+                            if (deleted > 0) {
+                                successCount++
+                                Log.d(TAG, "✅ 已删除 Content URI: $uri")
+                            } else {
+                                Log.w(TAG, "⚠️ 删除 Content URI 失败: $uri")
+                            }
+                        } catch (e: SecurityException) {
+                            Log.w(TAG, "⚠️ 无权限删除 Content URI: $uri", e)
+                        }
+                    }
+
+                    else -> {
+                        Log.w(TAG, "⚠️ 未知 URI 类型，无法删除: $uri")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ 删除文件异常: $uri", e)
+            }
+        }
+
+        Log.d(TAG, "✅ 立即清理完成: $successCount/${filesToDelete.size} 个文件")
+
+        // 发送通知
+        if (successCount > 0) {
+            mainHandler.post {
+                Toast.makeText(context, "已清理 $successCount 个临时文件", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    
+    /**
+     * ✅ 新增：判断是否为清理阶段的异常（可忽略）
+     */
+    private fun isCleanupException(e: Exception): Boolean {
+        // 常见的清理阶段异常类型
+        return when (e) {
+            is SocketException -> {
+                // Socket已关闭相关的异常
+                e.message?.contains("closed", ignoreCase = true) == true ||
+                        e.message?.contains("broken pipe", ignoreCase = true) == true ||
+                        e.message?.contains("connection reset", ignoreCase = true) == true ||
+                        e.message?.contains("bt socket closed", ignoreCase = true) == true  // ✅ 新增
+            }
+            is IOException -> {
+                // IO流已关闭相关的异常
+                e.message?.contains("closed", ignoreCase = true) == true ||
+                        e.message?.contains("stream", ignoreCase = true) == true ||
+                        e.message?.contains("bt socket closed", ignoreCase = true) == true  // ✅ 新增
+            }
+            else -> false
+        }
     }
 }

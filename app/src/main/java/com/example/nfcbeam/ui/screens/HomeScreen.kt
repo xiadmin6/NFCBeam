@@ -83,14 +83,19 @@ fun HomeScreen(
     var showDownloadPathDialog by remember { mutableStateOf(false) }
     
     // 蓝牙连接状态检测 - 只有在 HOME 页面且已连接时才自动进入下一阶段
-    LaunchedEffect(isNfcConnected, currentScreen) {
+    // ✅ 修复：使用 key 参数避免竞态条件，确保每次连接都是新的 LaunchedEffect
+    LaunchedEffect(key1 = isNfcConnected, key2 = currentScreen) {
+        // ✅ 只有在 HOME 页面且刚建立连接时才自动跳转
         if (isNfcConnected && currentScreen == Screen.HOME) {
             // 蓝牙连接建立后，延迟500ms后自动进入文件选择界面
             delay(500)
-            if (isSenderMode) {
-                onSendFiles()
-            } else {
-                onReceiveFiles()
+            // ✅ 再次检查状态，避免在延迟期间状态已改变
+            if (isNfcConnected && currentScreen == Screen.HOME) {
+                if (isSenderMode) {
+                    onSendFiles()
+                } else {
+                    onReceiveFiles()
+                }
             }
         }
     }

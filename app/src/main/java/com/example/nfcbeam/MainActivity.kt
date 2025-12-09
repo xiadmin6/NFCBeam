@@ -182,6 +182,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     private var isNfcConnected by mutableStateOf(false)
     private var bluetoothDeviceName by mutableStateOf("")
     private var isSenderMode by mutableStateOf(true)
+
+    private var hasTransferResultBeenFinalized = false
     
     // 新增：标记配对是否完成
     private var isPairingCompleted by mutableStateOf(false)
@@ -296,6 +298,8 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
                         onBackToHome = {
                             resetTransferState()
                             currentScreen = Screen.HOME
+                            // ✅ 只在跳转到 HOME 时才启动配对
+                            updateModeConfiguration()
                         },
                         onRetryTransfer = { startTransfer() },
                         onRequestPermissions = { requestPermissions() },
@@ -418,22 +422,70 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
     }
     
     // 更新模式配置
+    // ✅ 修复：添加延迟启动和安全检查，避免状态冲突
     @SuppressLint("MissingPermission")
     private fun updateModeConfiguration() {
+        Log.d("Mode", "🔄 准备更新模式配置...")
+        
         // 重置配对状态，解决配对重试限制问题
         bluetoothOOBPairingManager.resetPairingState()
         isPairingCompleted = false
         
-        if (isSenderMode) {
-            // 发送端模式：停止蓝牙服务器，开始BLE扫描
-            bluetoothManager.stopBluetoothServer()
-            bluetoothOOBPairingManager.startScanningForOOBDevices()
-            Log.d("Mode", "发送端模式，开始BLE扫描")
+        // ✅ 延迟 500ms 启动，确保之前的状态已完全清理
+        mainScope.launch {
+            kotlinx.coroutines.delay(500)
+            
+            // ✅ 安全检查：确保蓝牙已启用且有权限
+            val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
+            if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+                Log.w("Mode", "⚠️ 蓝牙未启用，跳过模式配置")
+                return@launch
+            }
+            
+            if (!hasBluetoothPermissions()) {
+                Log.w("Mode", "⚠️ 缺少蓝牙权限，跳过模式配置")
+                return@launch
+            }
+            
+            // ✅ 再次检查是否在 HOME 页面，避免在其他页面启动配对
+            if (currentScreen != Screen.HOME) {
+                Log.d("Mode", "⚠️ 不在 HOME 页面，跳过模式配置")
+                return@launch
+            }
+            
+            if (isSenderMode) {
+                // 发送端模式：停止蓝牙服务器，开始BLE扫描
+                bluetoothManager.stopBluetoothServer()
+                bluetoothOOBPairingManager.startScanningForOOBDevices()
+                Log.d("Mode", "✅ 发送端模式已启动，开始BLE扫描")
+            } else {
+                // 接收端模式：启动蓝牙服务器，开始BLE广告
+                bluetoothManager.startBluetoothServer()
+                bluetoothOOBPairingManager.startOOBPairing()
+                Log.d("Mode", "✅ 接收端模式已启动，蓝牙服务器和BLE广告")
+            }
+        }
+    }
+    
+    /**
+     * ✅ 新增：检查是否有蓝牙权限
+     */
+    private fun hasBluetoothPermissions(): Boolean {
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            )
         } else {
-            // 接收端模式：启动蓝牙服务器，开始BLE广告
-            bluetoothManager.startBluetoothServer()
-            bluetoothOOBPairingManager.startOOBPairing()
-            Log.d("Mode", "接收端模式，启动蓝牙服务器和BLE广告")
+            arrayOf(
+                Manifest.permission.BLUETOOTH,
+                Manifest.permission.BLUETOOTH_ADMIN
+            )
+        }
+        
+        return permissions.all { permission ->
+            ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
         }
     }
     
@@ -499,7 +551,14 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         fileTransferManager.startFileTransfer(selectedFiles)
     }
     
+    /**
+     * ✅ 修复：只重置状态，不启动配对
+     * 配对启动应该由页面跳转逻辑控制
+     */
     private fun resetTransferState() {
+        Log.d("MainActivity", "🔄 重置传输状态...")
+        
+        // 重置文件传输相关状态
         selectedFiles = emptyList()
         transferProgress = 0f
         transferStatus = FileTransferManager.TransferStatus()
@@ -507,8 +566,20 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
         transferredFileInfos = emptyList()
         totalTransferSize = 0L
         isTransferSuccess = true
+        
+        // 重置蓝牙连接状态
         isPairingCompleted = false
         isNfcConnected = false
+        bluetoothDeviceName = ""
+        
+        // 断开蓝牙连接
+        bluetoothManager.disconnect()
+        
+        // 重置配对状态（但不启动新的配对）
+        bluetoothOOBPairingManager.resetPairingState()
+        hasTransferResultBeenFinalized = false
+        
+        Log.d("MainActivity", "✅ 传输状态已重置（未启动配对）")
     }
     
     // 以下方法已被蓝牙OOB配对机制替代，不再需要
@@ -552,45 +623,85 @@ class MainActivity : ComponentActivity(), FileTransferManager.TransferListener,
 
     override fun onTransferCompleted(transferredFileList: List<FileTransferManager.FileInfo>, totalSize: Long) {
         Log.d("Transfer", "传输完成: ${transferredFileList.size} 个文件, 总大小: $totalSize 字节")
-        transferStatus = FileTransferManager.TransferStatus(
-            isCompleted = true,
-            isSuccess = true,
-            progress = 1f,
-            totalFiles = transferredFileList.size,
-            transferredFiles = transferredFileList.size
-        )
-        transferProgress = 100f
-        isTransferSuccess = true
-        isNfcConnected = false
-        
-        // 保存文件信息和总大小
-        transferredFileInfos = transferredFileList
-        totalTransferSize = totalSize
-        
-        // 更新传输完成的文件列表（用于显示）
-        transferredFiles = transferredFileList.map { it.fileName }
-        
-        currentScreen = Screen.TRANSFER_COMPLETE
+
+        if (!hasTransferResultBeenFinalized) {
+            hasTransferResultBeenFinalized = true
+
+            transferStatus = FileTransferManager.TransferStatus(
+                isCompleted = true,
+                isSuccess = true,
+                progress = 1f,
+                totalFiles = transferredFileList.size,
+                transferredFiles = transferredFileList.size
+            )
+            transferProgress = 100f
+            isTransferSuccess = true
+
+            // ✅ 修复：传输完成后断开蓝牙连接，确保下次可以重新连接
+            isNfcConnected = false
+            bluetoothManager.disconnect()
+            Log.d("Transfer", "✅ 传输完成，已断开蓝牙连接")
+
+            transferredFileInfos = transferredFileList
+            totalTransferSize = totalSize
+
+            fileTransferManager.clearReceiveState()
+
+            transferredFiles = transferredFileList.map { it.fileName }
+            currentScreen = Screen.TRANSFER_COMPLETE
+        } else {
+            Log.w("Transfer", "⚠️ 传输完成回调被忽略，结果已 finalized")
+        }
     }
 
     override fun onTransferError(error: String) {
         Log.e("Transfer", "传输错误: $error")
-        transferStatus = FileTransferManager.TransferStatus(
-            isCompleted = true,
-            isSuccess = false,
-            errorMessage = error
-        )
-        isTransferSuccess = false
-        isNfcConnected = false
-        currentScreen = Screen.TRANSFER_COMPLETE
+
+        // ✅ 修复：只有当结果尚未确定时才接受错误状态
+        if (!hasTransferResultBeenFinalized) {
+            hasTransferResultBeenFinalized = true // 🔒 锁定结果
+
+            transferStatus = FileTransferManager.TransferStatus(
+                isCompleted = true,
+                isSuccess = false,
+                errorMessage = error
+            )
+            isTransferSuccess = false
+
+            fileTransferManager.clearReceiveState()
+
+            isNfcConnected = false
+            bluetoothManager.disconnect()
+            Log.d("Transfer", "✅ 传输错误，已断开蓝牙连接")
+
+            currentScreen = Screen.TRANSFER_COMPLETE
+        } else {
+            // 成功已上报，忽略后续清理阶段的非致命错误
+            Log.w("Transfer", "⚠️ 忽略传输完成后的次要错误: $error")
+        }
     }
 
     override fun onTransferCancelled() {
         Log.d("Transfer", "传输取消")
         transferStatus = FileTransferManager.TransferStatus()
         transferProgress = 0f
+        
+        // ✅ 修复：传输取消后完全重置蓝牙状态，确保下次可以重新连接
         isNfcConnected = false
+        bluetoothDeviceName = ""
+        isPairingCompleted = false
+        bluetoothManager.disconnect()
+        
+        // ✅ 重置配对状态（但不立即启动）
+        bluetoothOOBPairingManager.resetPairingState()
+        
+        Log.d("Transfer", "✅ 传输取消，已重置蓝牙状态")
+        
+        // ✅ 跳转到 HOME 页面，然后才启动配对
         currentScreen = Screen.HOME
+        
+        // ✅ 只在跳转到 HOME 后才重新初始化配对
+        updateModeConfiguration()
     }
 
     /* ================  OOBPairingListener 接口实现 ================ */

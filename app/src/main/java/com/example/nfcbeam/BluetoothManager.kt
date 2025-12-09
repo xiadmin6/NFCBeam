@@ -21,7 +21,8 @@ class BluetoothManager(private val context: Context) {
     
     companion object {
         private const val TAG = "BluetoothManager"
-        private val SERVICE_UUID = UUID.fromString("fa87c0d0-afac-11de-8a39-0800200c9a66")
+        // ✅ 优化1: 使用 SPP 标准 UUID，避免协商
+        private val SERVICE_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB") // SPP UUID
         private const val SERVICE_NAME = "NFCBeamFileTransfer"
     }
     
@@ -66,14 +67,21 @@ class BluetoothManager(private val context: Context) {
                     device?.let {
                         stateListener?.onDeviceDiscovered(it)
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                            Log.d(TAG, "发现设备: ${it.name} - ${it.address}")
+                            // ✅ 优化4: 日志分级 - 使用 Log.v() 避免 release 版本性能损耗
+                            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                                Log.v(TAG, "发现设备: ${it.name} - ${it.address}")
+                            }
                         } else {
-                            Log.d(TAG, "发现设备: 无权限访问设备信息")
+                            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                                Log.v(TAG, "发现设备: 无权限访问设备信息")
+                            }
                         }
                     }
                 }
                 BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
-                    Log.d(TAG, "设备发现完成")
+                    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                        Log.v(TAG, "设备发现完成")
+                    }
                     Toast.makeText(context, "设备发现完成", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -134,7 +142,9 @@ class BluetoothManager(private val context: Context) {
     
     fun autoConnectToDevice(deviceAddress: String, serviceUUID: UUID = SERVICE_UUID) {
         if (isConnecting) {
-            Log.d(TAG, "已经在连接中")
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "已经在连接中")
+            }
             return
         }
         
@@ -150,19 +160,28 @@ class BluetoothManager(private val context: Context) {
                 val device = bluetoothAdapter?.getRemoteDevice(deviceAddress)
                 device?.let {
                     try {
-                        Log.d(TAG, "自动连接到设备: ${it.name}")
+                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                            Log.v(TAG, "自动连接到设备: ${it.name}")
+                        }
                         
                         // 确保蓝牙已启用
                         if (!isBluetoothEnabled()) {
-                            Log.d(TAG, "蓝牙未启用，正在启用...")
+                            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                                Log.v(TAG, "蓝牙未启用，正在启用...")
+                            }
                             enableBluetooth()
                             // 等待蓝牙启用
                             Thread.sleep(2000)
                         }
                         
-                        // 取消正在进行的发现
+                        // ✅ 优化2: 连接前停止 BLE 扫描，释放资源
                         try {
-                            bluetoothAdapter?.cancelDiscovery()
+                            if (bluetoothAdapter?.isDiscovering == true) {
+                                bluetoothAdapter?.cancelDiscovery()
+                                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                                    Log.v(TAG, "已停止蓝牙扫描，释放资源")
+                                }
+                            }
                         } catch (e: SecurityException) {
                             Log.w(TAG, "权限被拒绝，无法取消设备发现", e)
                         }
@@ -174,7 +193,9 @@ class BluetoothManager(private val context: Context) {
                         clientSocket = socket
                         isConnecting = false
                         
-                        Log.d(TAG, "自动连接成功: ${it.name}")
+                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                            Log.v(TAG, "自动连接成功: ${it.name}")
+                        }
                         stateListener?.onDeviceConnected(it)
                         
                         // 可以在这里开始文件传输
@@ -209,7 +230,9 @@ class BluetoothManager(private val context: Context) {
                 }
                 
                 if (adapter.startDiscovery()) {
-                    Log.d(TAG, "开始设备发现")
+                    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                        Log.v(TAG, "开始设备发现")
+                    }
                     Toast.makeText(context, "开始搜索设备...", Toast.LENGTH_SHORT).show()
                 } else {
                     Log.e(TAG, "无法开始设备发现")
@@ -254,7 +277,9 @@ class BluetoothManager(private val context: Context) {
     
     fun connectToDevice(deviceAddress: String, serviceUUID: UUID = SERVICE_UUID) {
         if (isConnecting) {
-            Log.d(TAG, "已经在连接中")
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "已经在连接中")
+            }
             return
         }
         
@@ -270,11 +295,18 @@ class BluetoothManager(private val context: Context) {
                 val device = bluetoothAdapter?.getRemoteDevice(deviceAddress)
                 device?.let {
                     try {
-                        Log.d(TAG, "尝试连接到设备: ${it.name}")
+                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                            Log.v(TAG, "尝试连接到设备: ${it.name}")
+                        }
                         
-                        // 取消正在进行的发现
+                        // ✅ 优化2: 连接前停止蓝牙扫描，释放资源
                         try {
-                            bluetoothAdapter?.cancelDiscovery()
+                            if (bluetoothAdapter?.isDiscovering == true) {
+                                bluetoothAdapter?.cancelDiscovery()
+                                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                                    Log.v(TAG, "已停止蓝牙扫描，释放资源")
+                                }
+                            }
                         } catch (e: SecurityException) {
                             Log.w(TAG, "权限被拒绝，无法取消设备发现", e)
                         }
@@ -286,7 +318,9 @@ class BluetoothManager(private val context: Context) {
                         clientSocket = socket
                         isConnecting = false
                         
-                        Log.d(TAG, "连接成功: ${it.name}")
+                        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                            Log.v(TAG, "连接成功: ${it.name}")
+                        }
                         stateListener?.onDeviceConnected(it)
                         
                         // 可以在这里开始文件传输
@@ -310,7 +344,9 @@ class BluetoothManager(private val context: Context) {
     
     fun startServer() {
         if (isServerRunning) {
-            Log.d(TAG, "服务器已经在运行")
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "服务器已经在运行")
+            }
             return
         }
         
@@ -325,7 +361,9 @@ class BluetoothManager(private val context: Context) {
                 serverSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SERVICE_UUID)
                 isServerRunning = true
                 
-                Log.d(TAG, "蓝牙服务器已启动，等待连接...")
+                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                    Log.v(TAG, "蓝牙服务器已启动，等待连接...")
+                }
                 
                 while (isServerRunning) {
                     try {
@@ -337,7 +375,9 @@ class BluetoothManager(private val context: Context) {
                                 } else {
                                     "Unknown"
                                 }
-                                Log.d(TAG, "客户端已连接: $deviceName")
+                                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                                    Log.v(TAG, "客户端已连接: $deviceName")
+                                }
                                 clientSocket = it
                                 stateListener?.onDeviceConnected(it.remoteDevice)
                                 
@@ -366,23 +406,78 @@ class BluetoothManager(private val context: Context) {
     }
     
     fun stopServer() {
-        isServerRunning = false
-        try {
-            serverSocket?.close()
-        } catch (e: IOException) {
-            Log.e(TAG, "关闭服务器socket失败", e)
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "停止蓝牙服务器...")
         }
-        serverSocket = null
+        
+        // ✅ 优化5: 正确停止服务器，避免资源泄漏
+        isServerRunning = false
+        
+        try {
+            serverSocket?.let { socket ->
+                try {
+                    socket.close()
+                    if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                        Log.v(TAG, "服务器 socket 已关闭")
+                    }
+                } catch (e: IOException) {
+                    Log.e(TAG, "关闭服务器socket失败", e)
+                }
+            }
+        } finally {
+            serverSocket = null
+        }
     }
     
     fun disconnect() {
-        try {
-            clientSocket?.close()
-        } catch (e: IOException) {
-            Log.e(TAG, "关闭客户端socket失败", e)
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "开始断开连接...")
         }
-        clientSocket = null
-        stateListener?.onDeviceDisconnected()
+        
+        // ✅ 优化5: 正确关闭 socket，避免资源泄漏
+        try {
+            // 1. 先关闭 socket（这会中断所有阻塞的 I/O 操作）
+            clientSocket?.let { socket ->
+                try {
+                    // 关闭输入流
+                    socket.inputStream?.close()
+                } catch (e: Exception) {
+                    Log.w(TAG, "关闭输入流失败", e)
+                }
+                
+                try {
+                    // 关闭输出流
+                    socket.outputStream?.close()
+                } catch (e: Exception) {
+                    Log.w(TAG, "关闭输出流失败", e)
+                }
+                
+                try {
+                    // 最后关闭 socket 本身
+                    if (socket.isConnected) {
+                        socket.close()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "关闭socket失败", e)
+                }
+                
+                if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                    Log.v(TAG, "Socket 已完全关闭")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "断开连接过程中发生异常", e)
+        } finally {
+            // 2. 清空引用，确保 GC 可以回收
+            clientSocket = null
+            
+            // 3. 通知监听器
+            stateListener?.onDeviceDisconnected()
+            
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "断开连接完成")
+            }
+        }
     }
     
     fun getClientSocket(): BluetoothSocket? {
@@ -414,12 +509,31 @@ class BluetoothManager(private val context: Context) {
     }
     
     fun cleanup() {
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "开始清理 BluetoothManager 资源...")
+        }
+        
         try {
+            // 1. 注销广播接收器
             context.unregisterReceiver(bluetoothReceiver)
         } catch (e: IllegalArgumentException) {
             // 接收器可能未注册
+            if (Log.isLoggable(TAG, Log.VERBOSE)) {
+                Log.v(TAG, "广播接收器未注册或已注销")
+            }
         }
+        
+        // 2. 停止服务器
         stopServer()
+        
+        // 3. 断开客户端连接
         disconnect()
+        
+        // 4. 清空状态监听器，避免内存泄漏
+        stateListener = null
+        
+        if (Log.isLoggable(TAG, Log.VERBOSE)) {
+            Log.v(TAG, "BluetoothManager 资源清理完成")
+        }
     }
 }

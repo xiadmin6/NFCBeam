@@ -280,6 +280,10 @@ class FileTransferService : Service(), FileTransferManager.TransferListener {
         updateNotification("传输完成: ${transferredFiles.size} 个文件", 100)
         notifyComplete(true, null)
         
+        // ✅ 修复：传输完成后断开蓝牙连接，确保下次可以重新连接
+        bluetoothManager?.disconnect()
+        Log.d("FileTransferService", "✅ 传输完成，已断开蓝牙连接")
+        
         // 3秒后停止服务
         serviceScope.launch {
             delay(3000)
@@ -299,6 +303,10 @@ class FileTransferService : Service(), FileTransferManager.TransferListener {
         updateNotification("传输失败: $error", 0)
         notifyComplete(false, null)
         
+        // ✅ 修复：传输错误后断开蓝牙连接，确保下次可以重新连接
+        bluetoothManager?.disconnect()
+        Log.d("FileTransferService", "✅ 传输错误，已断开蓝牙连接")
+        
         // 5秒后停止服务
         serviceScope.launch {
             delay(5000)
@@ -316,6 +324,13 @@ class FileTransferService : Service(), FileTransferManager.TransferListener {
         }
         
         updateNotification("传输已取消", 0)
+        
+        // ✅ 修复：通知所有回调传输已取消
+        notifyComplete(false, null)
+        
+        // ✅ 断开蓝牙连接，确保下次可以重新连接
+        bluetoothManager?.disconnect()
+        Log.d("FileTransferService", "✅ 已断开蓝牙连接")
         
         serviceScope.launch {
             delay(2000)

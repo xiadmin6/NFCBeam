@@ -15,6 +15,7 @@ class DownloadPathManager(private val context: Context) {
         private const val KEY_DOWNLOAD_LOCATION = "download_location"
         private const val KEY_CUSTOM_PATH_URI = "custom_path_uri" // 新增：用于存储自定义路径
 
+
         /** * 下载位置枚举 */
         enum class DownloadLocation(val displayName: String, val folderName: String) {
             DOWNLOADS("下载", Environment.DIRECTORY_DOWNLOADS),
